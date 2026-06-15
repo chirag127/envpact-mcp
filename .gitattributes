@@ -1,0 +1,7 @@
+# Enforce LF for all source files
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.sh text eol=lf

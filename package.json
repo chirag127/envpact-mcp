@@ -1,0 +1,51 @@
+{
+  "name": "envpact-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "MCP server for envpact — bring centralized secret management to AI coding agents (Cursor, Windsurf, Claude Code, Cline)",
+  "main": "src/index.js",
+  "bin": {
+    "envpact-mcp": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "start": "node src/index.js",
+    "lint": "for f in src/**/*.js src/*.js tests/*.test.js; do node --check \"$f\"; done"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "secrets",
+    "secrets-manager",
+    "env",
+    "dotenv",
+    "ai-agents",
+    "cursor",
+    "windsurf",
+    "claude",
+    "envpact"
+  ],
+  "author": "Chirag Singhal <whyiswhen@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://envpact.oriz.in",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chirag127/envpact-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chirag127/envpact-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ]
+}
