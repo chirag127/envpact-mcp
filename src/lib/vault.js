@@ -32,27 +32,78 @@ export function saveVault(vault, filePath = SECRETS_FILE) {
   fs.renameSync(tmp, filePath);
 }
 
+/**
+ * Second-layer defence for arbitrary names that get used as object keys
+ * inside the vault JSON. The MCP input schemas in src/tools/index.js
+ * are the first layer; this catches anything that bypasses them
+ * (programmatic callers, future tools, malformed inputs).
+ *
+ * Throws on prototype-poisoning names, empty strings, and path-like
+ * fragments that have no business in an env-key/project-name slot.
+ */
+export function assertSafeKey(name, kind = 'key') {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error(`Invalid ${kind}: must be a non-empty string`);
+  }
+  if (name === '__proto__' || name === 'constructor' || name === 'prototype') {
+    throw new Error(`Invalid ${kind}: reserved name "${name}"`);
+  }
+  if (name.includes('/') || name.includes('\\')) {
+    throw new Error(`Invalid ${kind}: must not contain path separators`);
+  }
+  // Reject ".." anywhere as a literal substring or as a dot-separated
+  // segment. Path separators are already rejected above so we only
+  // need to guard the literal pair.
+  if (name === '.' || name === '..' || name.split('.').some((s) => s === '..')) {
+    throw new Error(`Invalid ${kind}: must not contain ".." segments`);
+  }
+}
+
+// Internal helper. Uses Object.defineProperty so even if assertSafeKey is
+// somehow bypassed, writing the literal key "__proto__" lays down an own
+// data property instead of triggering the prototype setter.
+function defineSafeProperty(target, key, value) {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
 export function ensureProjectExists(vault, projectName) {
+  assertSafeKey(projectName, 'project name');
   if (!vault.projects) vault.projects = {};
-  if (!vault.projects[projectName]) vault.projects[projectName] = {};
+  if (!Object.prototype.hasOwnProperty.call(vault.projects, projectName)) {
+    defineSafeProperty(vault.projects, projectName, {});
+  }
 }
 
 export function setProjectSecret(vault, projectName, key, value, environment) {
+  assertSafeKey(projectName, 'project name');
+  assertSafeKey(key, 'secret key');
+  if (environment !== undefined && environment !== null) {
+    assertSafeKey(environment, 'environment');
+  }
   ensureProjectExists(vault, projectName);
   const project = vault.projects[projectName];
   if (environment) {
-    if (typeof project[key] !== 'object' || project[key] === null || Array.isArray(project[key])) {
-      project[key] = {};
+    const existing = Object.prototype.hasOwnProperty.call(project, key)
+      ? project[key]
+      : undefined;
+    if (typeof existing !== 'object' || existing === null || Array.isArray(existing)) {
+      defineSafeProperty(project, key, {});
     }
-    project[key][environment] = value;
+    defineSafeProperty(project[key], environment, value);
   } else {
-    project[key] = value;
+    defineSafeProperty(project, key, value);
   }
 }
 
 export function setSharedSecret(vault, key, value) {
+  assertSafeKey(key, 'shared secret key');
   if (!vault.shared) vault.shared = {};
-  vault.shared[key] = value;
+  defineSafeProperty(vault.shared, key, value);
 }
 
 export function findReferencingProjects(vault, sharedKey) {

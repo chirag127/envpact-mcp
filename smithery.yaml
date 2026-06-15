@@ -1,0 +1,69 @@
+# Smithery configuration for envpact-mcp
+# https://smithery.ai/docs/build/project-config
+#
+# After this file is committed to chirag127/envpact-mcp, sign in at
+# https://smithery.ai with GitHub and "Add Server" pointing at the repo.
+# Smithery will read this file and index the listing.
+
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema describing the user-side config the wrapper will pass.
+    # envpact-mcp itself reads no env vars at startup — it discovers the
+    # vault via the local ~/.envpact/secrets clone (managed by envpact-cli)
+    # — so this schema is intentionally minimal.
+    type: object
+    properties:
+      vaultPath:
+        type: string
+        description: >-
+          Optional override for the vault checkout path. Defaults to
+          ~/.envpact/secrets. Most users should leave this unset and run
+          `npx envpact-cli --init auto` once before first use.
+        default: ""
+    additionalProperties: false
+  commandFunction: |-
+    (config) => {
+      const env = { ...process.env };
+      if (config && typeof config.vaultPath === 'string' && config.vaultPath.length > 0) {
+        env.ENVPACT_VAULT_PATH = config.vaultPath;
+      }
+      return {
+        command: 'npx',
+        args: ['-y', 'envpact-mcp'],
+        env,
+      };
+    }
+
+build:
+  # Smithery's hosted-server build is opt-in. envpact-mcp is a local stdio
+  # server today (it needs filesystem access to ~/.envpact/secrets), so we
+  # do NOT enable hosted runtime. The `commandFunction` above is what
+  # users get when they install via Smithery.
+  dockerfile: ""
+
+# ──────────────────────────────────────────────────────────────────
+# Listing metadata (Smithery shows this on the marketplace card)
+# ──────────────────────────────────────────────────────────────────
+displayName: envpact
+icon: https://raw.githubusercontent.com/chirag127/envpact/main/docs/icon.png
+description: >-
+  Centralized secrets manager for AI agents. Resolves secrets from a
+  private Git-backed vault (~/.envpact/secrets) into project-scoped
+  environment maps. Reuse `shared.OPENAI_API_KEY` across 100+ projects;
+  rotate once, every project gets the new value next run. $0/month,
+  no SaaS subscription.
+tags:
+  - secrets-manager
+  - dotenv
+  - environment-variables
+  - github
+  - private-vault
+  - openai
+  - shared-secrets
+
+links:
+  homepage: https://envpact.oriz.in
+  documentation: https://github.com/chirag127/envpact#readme
+  issues: https://github.com/chirag127/envpact-mcp/issues
+  source: https://github.com/chirag127/envpact-mcp

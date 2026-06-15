@@ -17,19 +17,26 @@ function ok(text, structured) {
   };
 }
 
-function err(message) {
-  return {
+function err(message, structured) {
+  const out = {
     isError: true,
     content: [{ type: 'text', text: `error: ${message}` }],
   };
+  if (structured) out.structuredContent = structured;
+  return out;
 }
 
 export async function generateEnvHandler(args) {
   try {
-    const cwd = args.working_directory || process.cwd();
-    const project = (args.project_name || detectProjectFromGit(cwd)).toLowerCase();
-    const examplePath = path.join(cwd, '.env.example');
-    const outputPath = path.join(cwd, args.output_path || '.env');
+    const cwdAbs = path.resolve(args.working_directory || process.cwd());
+    const outputAbs = path.resolve(cwdAbs, args.output_path || '.env');
+    const rel = path.relative(cwdAbs, outputAbs);
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+      return err('output_path must resolve inside working_directory');
+    }
+
+    const project = (args.project_name || detectProjectFromGit(cwdAbs)).toLowerCase();
+    const examplePath = path.join(cwdAbs, '.env.example');
 
     pullVault();
     const vault = loadVault();
@@ -38,6 +45,20 @@ export async function generateEnvHandler(args) {
     const requiredKeys = parseEnvExample(examplePath);
     const result = resolveProject(vault, project, args.environment);
 
+    if (result.encrypted && result.encrypted.length > 0) {
+      return err(
+        `Cannot write .env: ${result.encrypted.length} key(s) are encrypted ` +
+          `(${result.encrypted.join(', ')}). The MCP server does not decrypt; ` +
+          `run \`envpact pull\` (envpact-cli) on a host with the age identity to ` +
+          `materialise this .env.`,
+        {
+          project,
+          environment: result.environment,
+          encrypted: result.encrypted,
+        }
+      );
+    }
+
     const orderedKeys = requiredKeys.length ? requiredKeys : Object.keys(result.resolved);
     const missingKeys = orderedKeys.filter((k) => !(k in result.resolved));
 
@@ -45,11 +66,11 @@ export async function generateEnvHandler(args) {
       environment: result.environment,
       project,
     });
-    writeEnvAtomic(outputPath, content);
-    ensureGitignoreCovers(cwd, '.env');
+    writeEnvAtomic(outputAbs, content);
+    ensureGitignoreCovers(cwdAbs, '.env');
 
     return ok(
-      `Wrote ${Object.keys(result.resolved).length} keys to ${outputPath} ` +
+      `Wrote ${Object.keys(result.resolved).length} keys to ${outputAbs} ` +
         `(env=${result.environment}, project=${project}). ` +
         (missingKeys.length
           ? `${missingKeys.length} key(s) still missing: ${missingKeys.join(', ')}. ` +
@@ -58,7 +79,7 @@ export async function generateEnvHandler(args) {
       {
         project,
         environment: result.environment,
-        output_path: outputPath,
+        output_path: outputAbs,
         resolved_count: Object.keys(result.resolved).length,
         missing: missingKeys,
         unresolved: result.unresolved,

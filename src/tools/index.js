@@ -11,6 +11,13 @@ import { addSharedSecretHandler } from './add-shared-secret.js';
 import { rotateSecretHandler } from './rotate-secret.js';
 import { syncGithubHandler } from './sync-github.js';
 
+// Validation regexes — first line of defence for MCP input. The vault
+// layer applies a structural assertSafeKey check as the second layer
+// (see src/lib/vault.js).
+export const PROJECT_NAME_REGEX = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+export const ENV_KEY_REGEX = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+export const ENVIRONMENT_REGEX = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
 export function registerTools(server, z) {
   server.registerTool(
     'generate_env',
@@ -21,9 +28,13 @@ export function registerTools(server, z) {
         'Reads .env.example, resolves shared.KEY references and per-environment objects, and writes .env atomically. ' +
         'Auto-detects project from git remote.',
       inputSchema: {
-        project_name: z.string().optional().describe(
-          'Project name override. Auto-detected from git remote if omitted.'
-        ),
+        project_name: z
+          .string()
+          .regex(PROJECT_NAME_REGEX)
+          .optional()
+          .describe(
+            'Project name override. Auto-detected from git remote if omitted.'
+          ),
         environment: z
           .enum(['development', 'staging', 'production', 'default'])
           .optional()
@@ -69,7 +80,7 @@ export function registerTools(server, z) {
       description:
         'List all environments configured for a specific project (e.g., development/staging/production).',
       inputSchema: {
-        project_name: z.string().describe('Project name'),
+        project_name: z.string().regex(PROJECT_NAME_REGEX).describe('Project name'),
       },
     },
     listEnvironmentsHandler
@@ -83,11 +94,15 @@ export function registerTools(server, z) {
         'Add or update a project-specific secret. Use "shared.KEY_NAME" as the value to reference a shared secret. ' +
         'Pass an environment to scope the secret to that environment only.',
       inputSchema: {
-        project_name: z.string(),
-        key: z.string().describe('Environment variable name (e.g. OPENAI_API_KEY)'),
+        project_name: z.string().regex(PROJECT_NAME_REGEX),
+        key: z
+          .string()
+          .regex(ENV_KEY_REGEX)
+          .describe('Environment variable name (e.g. OPENAI_API_KEY)'),
         value: z.string().describe('Value, or "shared.KEY_NAME" reference'),
         environment: z
           .string()
+          .regex(ENVIRONMENT_REGEX)
           .optional()
           .describe(
             'Optional. If set, the secret is stored as part of a per-environment object.'
@@ -104,7 +119,7 @@ export function registerTools(server, z) {
       description:
         'Add or update a shared secret. Shared secrets can be referenced by any project using "shared.KEY_NAME" syntax.',
       inputSchema: {
-        key: z.string(),
+        key: z.string().regex(ENV_KEY_REGEX),
         value: z.string(),
       },
     },
@@ -119,7 +134,7 @@ export function registerTools(server, z) {
         'Rotate a shared secret. Updates the value and returns the list of affected projects. ' +
         'Optionally syncs the new value to GitHub Actions for all of them.',
       inputSchema: {
-        key: z.string().describe('Shared secret name'),
+        key: z.string().regex(ENV_KEY_REGEX).describe('Shared secret name'),
         new_value: z.string(),
         sync_github: z.boolean().optional().default(false),
       },
@@ -134,7 +149,7 @@ export function registerTools(server, z) {
       description:
         'Sync all resolved secrets for a project to GitHub Actions repository secrets via the gh CLI.',
       inputSchema: {
-        project_name: z.string().optional(),
+        project_name: z.string().regex(PROJECT_NAME_REGEX).optional(),
         environment: z.string().optional(),
         repo_slug: z
           .string()
