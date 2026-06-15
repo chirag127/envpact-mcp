@@ -12,3 +12,13 @@ build/
 .wrangler/
 *.tgz
 .npmrc
+
+# Defense-in-depth: vault-shaped files should never appear here.
+# The only legitimate location is ~/.envpact/secrets/.
+secrets.json
+age.key
+*.age
+*.pem
+*.key
+!**/lib/key.js
+!**/lib/key.ts
