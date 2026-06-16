@@ -1,6 +1,6 @@
 {
   "name": "envpact-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "MCP server for envpact — bring centralized secret management to AI coding agents (Cursor, Windsurf, Claude Code, Cline)",
   "main": "src/index.js",
