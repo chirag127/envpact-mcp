@@ -1,0 +1,64 @@
+name: Deploy MCP Worker
+
+# Deploys the Cloudflare Worker variant of envpact-mcp on every
+# push to main that touches worker/. The Worker serves remote MCP
+# at https://mcp.envpact.oriz.in/mcp using Streamable HTTP +
+# WebStandardStreamableHTTPServerTransport (stateless).
+#
+# Required secrets (already on chirag127/envpact-mcp via gh secret set):
+#   - CLOUDFLARE_API_TOKEN  — Pages:Edit + Workers Scripts:Edit
+#   - CLOUDFLARE_ACCOUNT_ID — your account UUID
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Type check
+        run: node node_modules/typescript/lib/tsc.js --noEmit
+
+      - name: Bundle (dry run)
+        run: node node_modules/wrangler/bin/wrangler.js deploy --dry-run --outdir=dist
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node node_modules/wrangler/bin/wrangler.js deploy
+
+      - name: Smoke test deployed Worker
+        run: |
+          # Custom domain may take ~30s to propagate after first deploy.
+          for attempt in $(seq 1 12); do
+            if curl -fsSL https://mcp.envpact.oriz.in/healthz | grep -q ok; then
+              echo "✓ healthz passes"
+              break
+            fi
+            echo "Waiting for Worker (attempt $attempt/12)…"
+            sleep 5
+          done
+          # Server-card must always be reachable (no auth)
+          curl -fsSL https://mcp.envpact.oriz.in/.well-known/mcp/server-card.json \
+            | jq '.serverInfo, .tools | length' \
+            || (echo "::warning::server-card check failed — verify Cloudflare DNS for mcp.envpact.oriz.in")
