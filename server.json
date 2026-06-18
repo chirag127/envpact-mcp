@@ -1,14 +1,21 @@
 {
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.chirag127/envpact-mcp",
-  "description": "Centralised secrets manager for AI agents — resolves secrets from a private Git-backed vault into project-scoped .env maps. Share keys across 100+ projects via shared.KEY references; rotate once, every project picks up the change next run.",
+  "description": "Centralised, serverless secrets manager for AI agents — resolves secrets from a private Git-backed vault into project-scoped .env maps. Share keys across 100+ projects via shared.KEY references; rotate once, every project picks up the change next run.",
+  "repository": {
+    "url": "https://github.com/chirag127/envpact-mcp",
+    "source": "github"
+  },
   "version": "0.2.0",
-  "homepage": "https://envpact.oriz.in",
-  "repository": "https://github.com/chirag127/envpact-mcp",
-  "npm_package": "envpact-mcp",
-  "license": "MIT",
-  "categories": ["productivity", "developer-tools", "secrets"],
-  "install": {
-    "command": "npx",
-    "args": ["-y", "envpact-mcp"]
-  }
+  "websiteUrl": "https://envpact.oriz.in",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "envpact-mcp",
+      "version": "0.2.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
 }

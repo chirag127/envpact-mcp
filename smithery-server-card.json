@@ -1,0 +1,14 @@
+{
+  "name": "io.github.chirag127/envpact-mcp",
+  "description": "Centralised secrets manager for AI agents — resolves secrets from a private Git-backed vault into project-scoped .env maps. Share keys across 100+ projects via shared.KEY references; rotate once, every project picks up the change next run.",
+  "version": "0.2.0",
+  "homepage": "https://envpact.oriz.in",
+  "repository": "https://github.com/chirag127/envpact-mcp",
+  "npm_package": "envpact-mcp",
+  "license": "MIT",
+  "categories": ["productivity", "developer-tools", "secrets"],
+  "install": {
+    "command": "npx",
+    "args": ["-y", "envpact-mcp"]
+  }
+}

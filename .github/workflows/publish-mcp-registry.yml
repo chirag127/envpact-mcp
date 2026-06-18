@@ -1,0 +1,81 @@
+name: Publish to MCP Registry
+
+# Publishes server.json to the official Model Context Protocol
+# Registry at registry.modelcontextprotocol.io after a tag-triggered
+# npm publish (defined in publish.yml). Uses GitHub OIDC — no PAT
+# secret required beyond the id-token:write workflow permission.
+#
+# Schema reference: static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json
+# CLI:              https://github.com/modelcontextprotocol/registry
+# Docs:             https://modelcontextprotocol.io/registry/github-actions
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-mcp-registry:
+    name: Publish server.json
+    runs-on: ubuntu-latest
+    # Run after publish.yml's npm publish job has had a chance to
+    # propagate. We don't gate via `needs:` because publish.yml is
+    # in the same workflow trigger cohort; instead we sleep briefly
+    # and tolerate "package not yet visible" via the registry's
+    # built-in retry behaviour.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync server.json version with the git tag
+        run: |
+          if [[ "${GITHUB_REF}" =~ ^refs/tags/v(.+)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            jq --arg v "$VERSION" '.version = $v | .packages |= map(.version = $v)' server.json > server.tmp
+            mv server.tmp server.json
+            echo "Synced server.json → v$VERSION"
+            jq . server.json
+          fi
+
+      - name: Install mcp-publisher CLI
+        run: |
+          curl -L \
+            "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          chmod +x mcp-publisher
+          ./mcp-publisher --help | head -3
+
+      - name: Authenticate via GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+
+      - name: Wait for npm package to propagate
+        # The MCP registry verifies that the npm package referenced
+        # in server.json's packages[].identifier+version actually
+        # exists. publish.yml runs in parallel, so we wait briefly.
+        run: |
+          if [[ "${GITHUB_REF}" =~ ^refs/tags/v(.+)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            for attempt in $(seq 1 20); do
+              if curl -fsSL "https://registry.npmjs.org/envpact-mcp/$VERSION" >/dev/null 2>&1; then
+                echo "✓ envpact-mcp@$VERSION visible on npm"
+                exit 0
+              fi
+              echo "Waiting for envpact-mcp@$VERSION on npm (attempt $attempt/20)…"
+              sleep 15
+            done
+            echo "::warning::envpact-mcp@$VERSION not yet visible on npm after 5 minutes — proceeding anyway"
+          fi
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
+
+      - name: Confirm registry visibility
+        run: |
+          sleep 10
+          curl -fsSL "https://registry.modelcontextprotocol.io/v0/servers?search=envpact" \
+            | jq '.servers[] | select(.name == "io.github.chirag127/envpact-mcp")' \
+            || echo "::warning::server.json published but not yet indexed by the search endpoint (this is normal — it can take up to a few minutes)"
