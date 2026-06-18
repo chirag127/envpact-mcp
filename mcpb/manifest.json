@@ -56,17 +56,7 @@
       "required": false
     }
   },
-  "tools": [
-    { "name": "generate_env", "description": "Generate a .env file for the current project by resolving secrets from the vault." },
-    { "name": "list_projects", "description": "List all projects in the vault." },
-    { "name": "list_shared", "description": "List shared secret names (values masked)." },
-    { "name": "list_environments", "description": "List environments configured for a project." },
-    { "name": "add_secret", "description": "Add or update a project secret. Use shared.KEY for shared references." },
-    { "name": "add_shared_secret", "description": "Add or update a shared secret." },
-    { "name": "rotate_secret", "description": "Rotate a shared secret. Returns affected projects." },
-    { "name": "sync_github", "description": "Sync resolved secrets to GitHub Actions repository secrets via the gh CLI." }
-  ],
-  "tools_generated": false,
+  "tools_generated": true,
   "compatibility": {
     "claude_desktop": ">=0.10.0",
     "platforms": ["darwin", "win32", "linux"],
