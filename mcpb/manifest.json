@@ -4,8 +4,8 @@
   "name": "envpact",
   "display_name": "envpact — centralised secrets",
   "version": "0.4.0",
-  "description": "Resolve secrets from a private Git-backed vault into project .env maps.",
-  "long_description": "envpact is a centralised, serverless secrets manager for solo developers managing 100+ public GitHub repositories. One private vault repo (~/.envpact/secrets/) stores every secret; every project references shared keys via `shared.KEY` syntax. Rotate once → every project picks up the new value next run. This MCPB bundle ships a self-contained Node-based stdio server with all dependencies bundled — no global Node install required, drag the .mcpb onto Claude Desktop and it just works.",
+  "description": "Resolve secrets from a private Git-backed vault into project .env files (v3.1 schema, 11 tools).",
+  "long_description": "envpact is a centralised, serverless secrets manager for solo developers managing 100+ public GitHub repositories. One private vault repo (~/.envpact/secrets/) stores every secret; every project references shared keys via `shared.KEY` syntax. Rotate once → every project picks up the new value next run. v3.1 adds per-key timestamps, UTC + IST dual-render conflict prompts, and a global ~/.envpact/.env mirror via the new generate_global_env tool (11 tools total). This MCPB bundle ships a self-contained Node-based stdio server with all dependencies bundled — no global Node install required, drag the .mcpb onto Claude Desktop and it just works.",
   "author": {
     "name": "Chirag Singhal",
     "email": "whyiswhen@gmail.com",

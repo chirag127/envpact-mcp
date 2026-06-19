@@ -825,8 +825,8 @@ const HOMEPAGE_HTML = `<!doctype html>
   h1 { font-size: 1.6rem; }
   a { color: #0969da; }
 </style>
-<h1>🔒 envpact MCP — remote (v3)</h1>
-<p>This is the Cloudflare Worker variant of <a href="https://github.com/chirag127/envpact-mcp">envpact-mcp</a>. The MCP endpoint is at <code>/mcp</code>.</p>
+<h1>🔒 envpact MCP — remote (v3.1)</h1>
+<p>This is the Cloudflare Worker variant of <a href="https://github.com/chirag127/envpact-mcp">envpact-mcp</a>. The MCP endpoint is at <code>/mcp</code>. v3.1 ships per-key timestamps with UTC + IST dual-render conflict prompts and a global <code>~/.envpact/.env</code> mirror — 11 tools total including <code>generate_global_env</code>.</p>
 <h2>Configure your AI agent</h2>
 <pre>{
   "mcpServers": {

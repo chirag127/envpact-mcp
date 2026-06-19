@@ -16,6 +16,12 @@
  */
 
 export const SERVER_CARD = {
+  name: 'chirag127/envpact-mcp',
+  title: 'envpact — centralized secrets for solo devs',
+  description: "Resolve secrets from your private Git-backed vault into project .env files, AI agent edition. v3.1 schema with per-key timestamps, UTC + IST dual-render conflict prompts, and a global ~/.envpact/.env mirror. 11 tools: generate_env, list_projects, list_shared, add_secret, add_shared_secret, rotate_secret, sync_github, pull_secret, push_secret, sync_status, generate_global_env.",
+  version: '0.4.0',
+  websiteUrl: 'https://envpact.oriz.in',
+  repositoryUrl: 'https://github.com/chirag127/envpact-mcp',
   serverInfo: {
     name: 'envpact',
     version: '0.4.0',
