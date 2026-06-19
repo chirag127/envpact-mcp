@@ -104,13 +104,35 @@ npx envpact-cli --init auto
 | `generate_env` | Resolve secrets, write `.env` for the current project. |
 | `list_projects` | List all projects in the vault. |
 | `list_shared` | List shared secret names (values are masked). |
-| `list_environments` | List environments configured for a project. |
 | `add_secret` | Add/update a project secret. |
 | `add_shared_secret` | Add/update a shared secret. |
 | `rotate_secret` | Rotate a shared secret; reports affected projects. |
 | `sync_github` | Push resolved secrets to GitHub Actions. |
+| `pull_secret` | Pull one key from vault → `.env` (per-key, conflict-safe). |
+| `push_secret` | Push one key from `.env` → vault (per-key, conflict-safe). |
+| `sync_status` | Report per-key sync status across `.env.example`. |
 
 Schema details: see [SHARED_SPEC §7](https://github.com/chirag127/envpact/blob/main/_build/specs/SHARED_SPEC.md).
+
+## Per-key Sync (v3)
+
+The vault is **flat and single-environment per project** with
+`{value, _modified_at}` entries. The agent can sync one key at a
+time without touching the rest of `.env`:
+
+> **You**: "Pull the latest OPENAI_API_KEY from the vault."
+>
+> **Agent**: _calls `pull_secret({key: 'OPENAI_API_KEY'})`_ →
+> writes the new value to `.env`, updates `.env.example.lock`.
+> If you'd edited `.env` since the last sync, the call returns an
+> `isError` payload with `status: 'local_newer'`; the agent
+> retries with `force: true` only after asking you.
+
+> **You**: "What's the sync status of this project?"
+>
+> **Agent**: _calls `sync_status()`_ → reports each key as
+> `synced` / `local_newer` / `vault_newer` / `both_diverged` /
+> `local_only` / `vault_only`. NEVER returns values.
 
 ## Example Agent Conversations
 
