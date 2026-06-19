@@ -28,3 +28,4 @@ age.key
 *.key
 !**/lib/key.js
 !**/lib/key.ts
+.smithery-config-schema.json
