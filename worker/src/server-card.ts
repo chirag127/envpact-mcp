@@ -7,14 +7,14 @@
  * caller needs their own GitHub PAT, so anonymous tool/resource
  * enumeration via MCP would fail).
  *
- * The shape follows MCP types from @modelcontextprotocol/sdk.
- * SEP-1649 covers the proposal.
+ * v3: list_environments removed; pull_secret, push_secret,
+ * sync_status added; the `environment` parameter is gone.
  */
 
 export const SERVER_CARD = {
   serverInfo: {
     name: 'envpact',
-    version: '0.1.0',
+    version: '0.3.0',
   },
   authentication: {
     required: true,
@@ -34,7 +34,6 @@ export const SERVER_CARD = {
         type: 'object',
         properties: {
           project_name: { type: 'string', description: 'Project name (lower-case, dot/dash/underscore allowed).' },
-          environment: { type: 'string', description: 'Environment to resolve (development/staging/production).' },
         },
         required: ['project_name'],
       },
@@ -50,15 +49,6 @@ export const SERVER_CARD = {
       inputSchema: { type: 'object', properties: {} },
     },
     {
-      name: 'list_environments',
-      description: 'List environments configured for a project.',
-      inputSchema: {
-        type: 'object',
-        properties: { project_name: { type: 'string' } },
-        required: ['project_name'],
-      },
-    },
-    {
       name: 'add_secret',
       description: 'Add or update a project secret. Use "shared.KEY" as value to reference a shared.',
       inputSchema: {
@@ -67,7 +57,6 @@ export const SERVER_CARD = {
           project_name: { type: 'string' },
           key: { type: 'string' },
           value: { type: 'string' },
-          environment: { type: 'string' },
         },
         required: ['project_name', 'key', 'value'],
       },
@@ -95,7 +84,55 @@ export const SERVER_CARD = {
       description: 'Stub in the Worker variant — points at envpact-cli/envpact-action.',
       inputSchema: {
         type: 'object',
-        properties: { project_name: { type: 'string' }, environment: { type: 'string' } },
+        properties: { project_name: { type: 'string' } },
+      },
+    },
+    {
+      name: 'pull_secret',
+      description:
+        'Resolve one key from the vault. Worker variant returns the value as the response text body ' +
+        '(caller writes it to disk). Conflict gating uses optional `expected_modified_at`.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project_name: { type: 'string' },
+          key: { type: 'string' },
+          expected_modified_at: { type: 'string' },
+          force: { type: 'boolean' },
+        },
+        required: ['project_name', 'key'],
+      },
+    },
+    {
+      name: 'push_secret',
+      description:
+        'Push one key into the vault. Worker REQUIRES `value` (no .env to read from). Conflict gating ' +
+        'uses optional `expected_modified_at`.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project_name: { type: 'string' },
+          key: { type: 'string' },
+          value: { type: 'string' },
+          expected_modified_at: { type: 'string' },
+          force: { type: 'boolean' },
+        },
+        required: ['project_name', 'key', 'value'],
+      },
+    },
+    {
+      name: 'sync_status',
+      description:
+        'Per-key sync status from the vault\'s perspective. Optionally fetches a project repo\'s ' +
+        '.env.example via Contents API to enumerate required keys.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project_name: { type: 'string' },
+          env_example_repo: { type: 'string' },
+          env_example_path: { type: 'string' },
+        },
+        required: ['project_name'],
       },
     },
   ],

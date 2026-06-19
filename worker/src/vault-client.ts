@@ -4,21 +4,18 @@
  * The Worker has no filesystem, so we read & write secrets.json
  * through the GitHub Contents API using a per-request PAT supplied
  * by the caller. This token is scoped to the user's
- * envpact-secrets repo and is what makes the Worker multi-tenant
- * — every connected client owns their own vault.
+ * envpact-secrets repo and is what makes the Worker multi-tenant.
  *
- * Token sources, in order of preference:
- *   1. The connecting user's session config (`config.githubToken`)
- *      passed by Smithery / mcp client registration.
- *   2. The `Authorization: Bearer <pat>` header on the request.
- *   3. None — the Worker refuses to operate.
+ * v3: vaults are read with auto-upgrade in memory; only writes
+ * persist v3 back to the repo (per SHARED_SPEC §1.4 — reads are
+ * idempotent).
  */
 
 import type { Vault } from './resolver';
 import { validateVault } from './resolver';
 
 const GITHUB_API = 'https://api.github.com';
-const SCHEMA_URL = 'https://envpact.oriz.in/schema/v2.json';
+const SCHEMA_URL = 'https://envpact.oriz.in/schema/v3.json';
 
 export interface VaultLocator {
   owner: string;
@@ -32,10 +29,87 @@ export interface VaultSnapshot {
   repo: string;
 }
 
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * In-memory upgrade of v1/v2 → v3 (per SHARED_SPEC §1.4).
+ * Pure: returns a NEW object.
+ */
+export function upgradeVault(parsed: unknown): Vault {
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Vault must be a JSON object');
+  }
+  const obj = parsed as Vault;
+  if (obj.version === 3) return obj;
+  if (obj.version !== 1 && obj.version !== 2) {
+    throw new Error(`Unsupported vault version: ${obj.version}. Expected 1, 2, or 3.`);
+  }
+
+  const fallback =
+    (obj.metadata && typeof obj.metadata.updated_at === 'string'
+      ? obj.metadata.updated_at
+      : null) || nowIso();
+
+  const next: Vault = {
+    $schema: SCHEMA_URL,
+    version: 3,
+    shared: {},
+    projects: {},
+    metadata: { ...(obj.metadata || {}) },
+  };
+  (next.metadata as Record<string, string>).updated_at = fallback;
+
+  for (const [k, raw] of Object.entries(obj.shared || {})) {
+    if (typeof raw === 'string') {
+      (next.shared as Record<string, unknown>)[k] = { value: raw, _modified_at: fallback };
+    } else if (raw && typeof raw === 'object' && typeof (raw as { value?: unknown }).value === 'string') {
+      const r = raw as { value: string; _modified_at?: string };
+      (next.shared as Record<string, unknown>)[k] = {
+        value: r.value,
+        _modified_at: typeof r._modified_at === 'string' ? r._modified_at : fallback,
+      };
+    }
+  }
+
+  for (const [pname, proj] of Object.entries(obj.projects || {})) {
+    if (!proj || typeof proj !== 'object') continue;
+    const out: Record<string, unknown> = {};
+    for (const [key, raw] of Object.entries(proj as Record<string, unknown>)) {
+      if (key.startsWith('_')) continue;
+      if (typeof raw === 'string') {
+        out[key] = { value: raw, _modified_at: fallback };
+      } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const r = raw as Record<string, unknown>;
+        if (typeof r.value === 'string' && !('default' in r) && !('production' in r)) {
+          out[key] = {
+            value: r.value,
+            _modified_at: typeof r._modified_at === 'string' ? (r._modified_at as string) : fallback,
+          };
+        } else {
+          let picked: string | null = null;
+          if (typeof r.default === 'string' && r.default !== '') picked = r.default as string;
+          else if (typeof r.production === 'string' && r.production !== '') picked = r.production as string;
+          else {
+            for (const v of Object.values(r)) {
+              if (typeof v === 'string' && v !== '') { picked = v; break; }
+            }
+          }
+          if (picked !== null) out[key] = { value: picked, _modified_at: fallback };
+        }
+      }
+    }
+    (next.projects as Record<string, unknown>)[pname] = out;
+  }
+
+  return next;
+}
+
 export class VaultClient {
   constructor(
     private readonly token: string,
-    private readonly userAgent = 'envpact-mcp-worker/0.1.0'
+    private readonly userAgent = 'envpact-mcp-worker/0.3.0'
   ) {
     if (!token) throw new Error('GitHub token required');
   }
@@ -49,10 +123,6 @@ export class VaultClient {
     };
   }
 
-  /**
-   * Resolve the authenticated user's login. Used for namespace
-   * defaulting when the client doesn't pass {owner: …}.
-   */
   async whoAmI(): Promise<string> {
     const r = await fetch(`${GITHUB_API}/user`, { headers: this.headers() });
     if (!r.ok) throw new Error(`GitHub /user failed: ${r.status} ${r.statusText}`);
@@ -106,21 +176,36 @@ export class VaultClient {
     if (body.encoding !== 'base64') {
       throw new Error(`Unexpected Contents API encoding: ${body.encoding}`);
     }
-    // Decode base64 → utf-8 for arbitrary unicode (avoids deprecated unescape).
     const bytes = Uint8Array.from(atob(body.content.replace(/\n/g, '')), (c) => c.charCodeAt(0));
     const text = new TextDecoder('utf-8').decode(bytes);
     let parsed: unknown;
     try { parsed = JSON.parse(text); } catch (e) {
       throw new Error(`secrets.json is not valid JSON: ${(e as Error).message}`);
     }
-    // Auto-upgrade v1 → v2 in memory (we do NOT write back unless mutated).
-    const obj = parsed as Vault;
-    if (obj.version === 1) {
-      obj.version = 2;
-      obj.$schema = SCHEMA_URL;
-    }
-    validateVault(obj);
-    return { vault: obj, sha: body.sha, owner, repo };
+    // Auto-upgrade v1/v2 → v3 in memory. We do NOT write back unless mutated.
+    const upgraded = upgradeVault(parsed);
+    validateVault(upgraded);
+    return { vault: upgraded, sha: body.sha, owner, repo };
+  }
+
+  /**
+   * Fetch one file from the repo (used by pull_secret to read
+   * .env.example contents). Returns the decoded text or null on
+   * 404. Path is repo-relative.
+   */
+  async getRepoFile(slug: string, repoPath: string): Promise<string | null> {
+    const [owner, repo] = slug.split('/');
+    if (!owner || !repo) throw new Error(`Invalid repo slug: ${slug}`);
+    const r = await fetch(
+      `${GITHUB_API}/repos/${owner}/${repo}/contents/${encodeURIComponent(repoPath)}`,
+      { headers: this.headers() }
+    );
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`GitHub Contents API ${slug}/${repoPath} failed: ${r.status}`);
+    const body = (await r.json()) as { content?: string; encoding?: string };
+    if (!body.content || body.encoding !== 'base64') return null;
+    const bytes = Uint8Array.from(atob(body.content.replace(/\n/g, '')), (c) => c.charCodeAt(0));
+    return new TextDecoder('utf-8').decode(bytes);
   }
 
   async putVault(
@@ -129,11 +214,10 @@ export class VaultClient {
     message: string
   ): Promise<{ sha: string }> {
     nextVault.metadata = nextVault.metadata || {};
-    nextVault.metadata.updated_at = new Date().toISOString();
+    (nextVault.metadata as Record<string, string>).updated_at = nowIso();
     nextVault.$schema = nextVault.$schema || SCHEMA_URL;
-    nextVault.version = nextVault.version || 2;
+    nextVault.version = (nextVault.version || 3) as 3;
 
-    // Encode JSON → base64 via UTF-8 bytes (no `unescape`, no surrogate split).
     const text = JSON.stringify(nextVault, null, 2) + '\n';
     const bytes = new TextEncoder().encode(text);
     let bin = '';

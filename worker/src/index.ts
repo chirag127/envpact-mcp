@@ -1,34 +1,45 @@
 /**
- * envpact-mcp-worker — Cloudflare Worker remote MCP server.
+ * envpact-mcp-worker — Cloudflare Worker remote MCP server (v3).
  *
  * Serves MCP over Streamable HTTP at /mcp, plus a static
  * Smithery server-card at /.well-known/mcp/server-card.json so
  * Smithery can publish us via URL without scanning past the auth
  * wall.
  *
- * Architecture:
- *   - Stateless. createMcpHandler() — no Durable Objects, no
- *     per-session state in v0.1.0. Every tool call independently
- *     fetches the vault via the GitHub Contents API using the
- *     caller's token.
- *   - Multi-tenant. Each connecting user supplies their own
- *     GitHub PAT via session config (Smithery's OAuth UI for
- *     URL-published servers handles the token-collection flow,
- *     or callers can pass `Authorization: Bearer <pat>`).
- *   - Per-request auth means there is no stored secret in the
- *     Worker. If the Worker is compromised, no vault is exposed.
+ * Architecture (unchanged from 0.1.0): stateless, multi-tenant,
+ * no Durable Objects, no per-session state. Every tool call
+ * independently fetches the vault via the GitHub Contents API
+ * using the caller's token.
  *
- * The 8 tools mirror the local stdio server bit-for-bit:
- *   generate_env, list_projects, list_shared, list_environments,
- *   add_secret, add_shared_secret, rotate_secret, sync_github
+ * v3 tool surface (10 tools total):
+ *   generate_env, list_projects, list_shared, add_secret,
+ *   add_shared_secret, rotate_secret, sync_github,
+ *   pull_secret, push_secret, sync_status
  *
- * Deviations from the stdio server (documented):
- *   - generate_env returns the resolved .env content as a text
- *     resource (the Worker has no filesystem to write to).
- *   - sync_github is unimplemented in this build (would require
- *     either bundling libsodium for sealed-box encryption of repo
- *     secrets, or an outbound call to gh's REST API with the
- *     same restriction). Returns an isError pointer at envpact-cli.
+ * Worker-specific deviations from the stdio variant (documented
+ * in each tool's description):
+ *   - generate_env returns the resolved .env content as text
+ *     (the Worker has no filesystem to write to).
+ *   - pull_secret reads .env.example via the GitHub Contents API
+ *     of the *target* project repo (slug supplied or auto-detected
+ *     from session config), and returns the resolved value as text
+ *     because there is no local .env to write to. The conflict
+ *     gate degrades to "vault-only" — no local lock to compare
+ *     against.
+ *   - push_secret REQUIRES a `value` parameter (no .env to read
+ *     from). The conflict gate uses the supplied
+ *     `expected_modified_at` parameter as the lock baseline; if
+ *     the vault's _modified_at differs and force is not set, the
+ *     push is refused.
+ *   - sync_status accepts either an explicit list of keys or an
+ *     `env_example_repo`/`env_example_path` pair pointing at a
+ *     project repo. Status states reachable: synced, vault_only,
+ *     local_only (when caller supplied a key list). vault_newer/
+ *     local_newer/both_diverged require local state which the
+ *     Worker can't see.
+ *   - sync_github is unimplemented (would require libsodium
+ *     sealed-box encryption). Returns isError pointing at
+ *     envpact-cli/envpact-action.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -38,31 +49,26 @@ import { z } from 'zod';
 import {
   PROJECT_NAME_REGEX,
   ENV_KEY_REGEX,
-  ENVIRONMENT_REGEX,
   assertSafeKey,
 } from './validation';
 import {
   resolveProject,
-  listProjectEnvironments,
   ENC_PREFIX,
+  entryValue,
+  entryModifiedAt,
+  resolveString,
   type Vault,
 } from './resolver';
 import { VaultClient } from './vault-client';
 import { SERVER_CARD } from './server-card';
 
-// Per-request configuration (set via session config or header).
 interface SessionConfig {
   githubToken?: string;
   vaultOwner?: string;
   vaultRepo?: string;
 }
 
-// Cloudflare Workers env binding (no required vars in v0.1.0).
 type Env = Record<string, never>;
-
-// ───────────────────────────────────────────────────────────────
-// Helpers
-// ───────────────────────────────────────────────────────────────
 
 function ok(text: string, structured?: Record<string, unknown>) {
   return {
@@ -99,23 +105,39 @@ async function getOwner(client: VaultClient, config: SessionConfig | undefined):
   return config?.vaultOwner || (await client.whoAmI());
 }
 
-// ───────────────────────────────────────────────────────────────
-// MCP server factory — fresh server per request keeps it stateless
-// ───────────────────────────────────────────────────────────────
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+// ── Light .env.example parser (no fs) ──────────────────────────
+function parseEnvExampleKeys(text: string | null): string[] {
+  if (!text) return [];
+  const out: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !out.includes(key)) out.push(key);
+  }
+  return out;
+}
 
 function buildServer(config: SessionConfig | undefined, request?: Request) {
   const server = new McpServer(
-    { name: 'envpact', version: '0.1.0', websiteUrl: 'https://envpact.oriz.in' },
+    { name: 'envpact', version: '0.3.0', websiteUrl: 'https://envpact.oriz.in' },
     {
       capabilities: { tools: {} },
       instructions:
-        'envpact MCP — manage secrets in your private GitHub vault. NEVER ECHO SECRET VALUES; ' +
-        'list_shared masks them. Tools: generate_env, list_projects, list_shared, list_environments, ' +
-        'add_secret, add_shared_secret, rotate_secret. Reference shared values via shared.KEY syntax; ' +
-        'per-env values are nested objects keyed by environment name.',
+        'envpact MCP — manage secrets in your private GitHub vault (v3 schema, flat single-environment with ' +
+        'per-key timestamps). NEVER ECHO SECRET VALUES; list_shared masks them. Tools: generate_env, ' +
+        'list_projects, list_shared, add_secret, add_shared_secret, rotate_secret, sync_github, ' +
+        'pull_secret, push_secret, sync_status. Reference shared values via shared.KEY syntax.',
     }
   );
 
+  // ── generate_env ─────────────────────────────────────────────
   server.registerTool(
     'generate_env',
     {
@@ -125,7 +147,6 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
         'cannot write to disk; the caller writes the returned text wherever it wants.',
       inputSchema: {
         project_name: z.string().regex(PROJECT_NAME_REGEX),
-        environment: z.string().regex(ENVIRONMENT_REGEX).optional(),
       },
     },
     async (args) => {
@@ -133,18 +154,17 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
         const c = getClient(config, request);
         const owner = await getOwner(c, config);
         const snap = await c.getVault({ owner, repo: config?.vaultRepo });
-        const result = resolveProject(snap.vault, args.project_name, args.environment);
+        const result = resolveProject(snap.vault, args.project_name);
         if (result.encrypted.length > 0) {
           return err(
             `Cannot materialise: ${result.encrypted.length} key(s) are encrypted (${result.encrypted.join(', ')}). ` +
               `The Worker has no decryption path. Use envpact-cli on a host with the age identity.`,
-            { project: args.project_name, environment: result.environment, encrypted: result.encrypted }
+            { project: args.project_name, encrypted: result.encrypted }
           );
         }
         const lines = [
           `# Generated by envpact-mcp-worker on ${new Date().toISOString()}`,
           `# project: ${args.project_name}`,
-          `# environment: ${result.environment}`,
           '',
         ];
         for (const [k, v] of Object.entries(result.resolved)) {
@@ -153,7 +173,6 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
         }
         return ok(lines.join('\n') + '\n', {
           project: args.project_name,
-          environment: result.environment,
           resolved_count: Object.keys(result.resolved).length,
           unresolved: result.unresolved,
         });
@@ -163,6 +182,7 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
     }
   );
 
+  // ── list_projects ────────────────────────────────────────────
   server.registerTool(
     'list_projects',
     { title: 'List projects in the vault', description: 'List all projects.', inputSchema: {} },
@@ -175,12 +195,11 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
         const summary = projects.map((p) => ({
           name: p,
           key_count: Object.keys((snap.vault.projects || {})[p] || {}).filter((k) => !k.startsWith('_')).length,
-          environments: listProjectEnvironments(snap.vault, p),
         }));
         return ok(
           projects.length
             ? `${projects.length} project(s):\n` +
-                summary.map((s) => `  ${s.name}  (${s.key_count} keys, envs: ${s.environments.join('/') || 'none'})`).join('\n')
+                summary.map((s) => `  ${s.name}  (${s.key_count} keys)`).join('\n')
             : '(no projects yet)',
           { projects: summary }
         );
@@ -190,6 +209,7 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
     }
   );
 
+  // ── list_shared ──────────────────────────────────────────────
   server.registerTool(
     'list_shared',
     {
@@ -203,10 +223,13 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
         const owner = await getOwner(c, config);
         const snap = await c.getVault({ owner, repo: config?.vaultRepo });
         const items = Object.entries(snap.vault.shared || {})
-          .map(([name, value]) => ({
-            name,
-            encrypted: typeof value === 'string' && value.startsWith(ENC_PREFIX),
-          }))
+          .map(([name, entry]) => {
+            const v = entryValue(entry);
+            return {
+              name,
+              encrypted: typeof v === 'string' && v.startsWith(ENC_PREFIX),
+            };
+          })
           .sort((a, b) => a.name.localeCompare(b.name));
         return ok(
           items.length
@@ -221,76 +244,50 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
     }
   );
 
-  server.registerTool(
-    'list_environments',
-    {
-      title: 'List environments for a project',
-      description: 'List the environments configured for a project.',
-      inputSchema: { project_name: z.string().regex(PROJECT_NAME_REGEX) },
-    },
-    async (args) => {
-      try {
-        const c = getClient(config, request);
-        const owner = await getOwner(c, config);
-        const snap = await c.getVault({ owner, repo: config?.vaultRepo });
-        const envs = listProjectEnvironments(snap.vault, args.project_name);
-        return ok(
-          envs.length ? `Environments for ${args.project_name}: ${envs.join(', ')}` : `(none)`,
-          { project: args.project_name, environments: envs }
-        );
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
-  );
-
+  // ── add_secret (v3: no environment) ──────────────────────────
   server.registerTool(
     'add_secret',
     {
       title: 'Add or update a project secret',
-      description: 'Add/update a project secret. Use shared.KEY for shared references.',
+      description:
+        'Add/update a project secret. Use shared.KEY for shared references. v3: single environment per project.',
       inputSchema: {
         project_name: z.string().regex(PROJECT_NAME_REGEX),
         key: z.string().regex(ENV_KEY_REGEX),
         value: z.string(),
-        environment: z.string().regex(ENVIRONMENT_REGEX).optional(),
       },
     },
     async (args) => {
       try {
         assertSafeKey(args.project_name, 'project name');
         assertSafeKey(args.key, 'secret key');
-        if (args.environment) assertSafeKey(args.environment, 'environment');
-
         const c = getClient(config, request);
         const owner = await getOwner(c, config);
         const snap = await c.getVault({ owner, repo: config?.vaultRepo });
-        const next: Vault = JSON.parse(JSON.stringify(snap.vault));
+        const next = JSON.parse(JSON.stringify(snap.vault)) as Vault;
         next.projects = next.projects || {};
         if (!Object.prototype.hasOwnProperty.call(next.projects, args.project_name)) {
           Object.defineProperty(next.projects, args.project_name, {
             value: {}, writable: true, enumerable: true, configurable: true,
           });
         }
-        const project = next.projects[args.project_name];
-        if (args.environment) {
-          const existing = (project as Record<string, unknown>)[args.key];
-          if (typeof existing !== 'object' || existing === null || Array.isArray(existing)) {
-            (project as Record<string, unknown>)[args.key] = {};
-          }
-          ((project as Record<string, Record<string, string>>)[args.key])[args.environment] = args.value;
-        } else {
-          (project as Record<string, unknown>)[args.key] = args.value;
-        }
+        const project = next.projects[args.project_name] as Record<string, unknown>;
+        const modifiedAt = nowIso();
+        Object.defineProperty(project, args.key, {
+          value: { value: args.value, _modified_at: modifiedAt },
+          writable: true, enumerable: true, configurable: true,
+        });
         await c.putVault(snap, next, `envpact-mcp-worker: set ${args.project_name}.${args.key}`);
-        return ok(`Set ${args.project_name}.${args.key}${args.environment ? ` (${args.environment})` : ''}`,
-          { project: args.project_name, key: args.key, environment: args.environment });
+        return ok(`Set ${args.project_name}.${args.key}`, {
+          project: args.project_name, key: args.key, modified_at: modifiedAt, ok: true,
+        });
       } catch (e) {
         return err((e as Error).message);
       }
     }
   );
 
+  // ── add_shared_secret ────────────────────────────────────────
   server.registerTool(
     'add_shared_secret',
     {
@@ -307,19 +304,22 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
         const c = getClient(config, request);
         const owner = await getOwner(c, config);
         const snap = await c.getVault({ owner, repo: config?.vaultRepo });
-        const next: Vault = JSON.parse(JSON.stringify(snap.vault));
+        const next = JSON.parse(JSON.stringify(snap.vault)) as Vault;
         next.shared = next.shared || {};
+        const modifiedAt = nowIso();
         Object.defineProperty(next.shared, args.key, {
-          value: args.value, writable: true, enumerable: true, configurable: true,
+          value: { value: args.value, _modified_at: modifiedAt },
+          writable: true, enumerable: true, configurable: true,
         });
         await c.putVault(snap, next, `envpact-mcp-worker: set shared.${args.key}`);
-        return ok(`Set shared.${args.key}`, { key: args.key });
+        return ok(`Set shared.${args.key}`, { key: args.key, modified_at: modifiedAt, ok: true });
       } catch (e) {
         return err((e as Error).message);
       }
     }
   );
 
+  // ── rotate_secret ────────────────────────────────────────────
   server.registerTool(
     'rotate_secret',
     {
@@ -339,35 +339,31 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
         if (!snap.vault.shared || !(args.key in snap.vault.shared)) {
           return err(`Shared secret not found: ${args.key}`);
         }
-        const existing = snap.vault.shared[args.key];
-        if (typeof existing === 'string' && existing.startsWith(ENC_PREFIX)) {
+        const existingVal = entryValue((snap.vault.shared as Record<string, unknown>)[args.key]);
+        if (typeof existingVal === 'string' && existingVal.startsWith(ENC_PREFIX)) {
           return err(
             `shared.${args.key} is encrypted. The Worker cannot decrypt or re-encrypt; ` +
               `rotate via envpact-cli on a host with the age identity.`,
             { key: args.key, encrypted: true }
           );
         }
-        // Find references for the response payload
-        const refs: { project: string; key: string; environment?: string }[] = [];
+        const refs: { project: string; key: string }[] = [];
         const ref = `shared.${args.key}`;
         for (const [pname, proj] of Object.entries(snap.vault.projects || {})) {
-          for (const [k, v] of Object.entries(proj)) {
+          for (const [k, entry] of Object.entries(proj as Record<string, unknown>)) {
             if (k.startsWith('_')) continue;
-            if (typeof v === 'string' && v === ref) refs.push({ project: pname, key: k });
-            else if (v && typeof v === 'object') {
-              for (const [env, ev] of Object.entries(v)) {
-                if (typeof ev === 'string' && ev === ref) refs.push({ project: pname, key: k, environment: env });
-              }
-            }
+            const v = entryValue(entry);
+            if (v === ref) refs.push({ project: pname, key: k });
           }
         }
-        const next: Vault = JSON.parse(JSON.stringify(snap.vault));
-        (next.shared as Record<string, string>)[args.key] = args.new_value;
+        const next = JSON.parse(JSON.stringify(snap.vault)) as Vault;
+        const modifiedAt = nowIso();
+        (next.shared as Record<string, unknown>)[args.key] = { value: args.new_value, _modified_at: modifiedAt };
         await c.putVault(snap, next, `envpact-mcp-worker: rotate shared.${args.key}`);
         return ok(
           `Rotated shared.${args.key}. ${refs.length} reference(s) affected:\n` +
-            refs.map((r) => `  - ${r.project}.${r.key}${r.environment ? ` (${r.environment})` : ''}`).join('\n'),
-          { key: args.key, references: refs }
+            refs.map((r) => `  - ${r.project}.${r.key}`).join('\n'),
+          { key: args.key, references: refs, modified_at: modifiedAt }
         );
       } catch (e) {
         return err((e as Error).message);
@@ -375,6 +371,7 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
     }
   );
 
+  // ── sync_github (unimplemented) ──────────────────────────────
   server.registerTool(
     'sync_github',
     {
@@ -384,7 +381,6 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
         'of each repo secret. Use envpact-cli or envpact-action.',
       inputSchema: {
         project_name: z.string().regex(PROJECT_NAME_REGEX).optional(),
-        environment: z.string().regex(ENVIRONMENT_REGEX).optional(),
       },
     },
     async () => {
@@ -396,22 +392,194 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
     }
   );
 
+  // ── pull_secret (worker variant returns text) ───────────────
+  server.registerTool(
+    'pull_secret',
+    {
+      title: 'Pull a single key from the vault (Worker variant returns the value as text)',
+      description:
+        'Resolve one key from the vault. Worker has no .env to write to; the resolved value is returned ' +
+        'as the response TEXT BODY (not in structuredContent — and the caller is responsible for writing ' +
+        'it to disk). Conflict gating in the Worker is best-effort: if `expected_modified_at` is supplied ' +
+        'and differs from the vault\'s `_modified_at`, the call returns isError unless force=true.',
+      inputSchema: {
+        project_name: z.string().regex(PROJECT_NAME_REGEX),
+        key: z.string().regex(ENV_KEY_REGEX),
+        expected_modified_at: z
+          .string()
+          .optional()
+          .describe('The modified_at this caller last saw. If it disagrees with the vault, the call refuses unless force=true.'),
+        force: z.boolean().optional().default(false),
+      },
+    },
+    async (args) => {
+      try {
+        const c = getClient(config, request);
+        const owner = await getOwner(c, config);
+        const snap = await c.getVault({ owner, repo: config?.vaultRepo });
+        const project = (snap.vault.projects || {})[args.project_name];
+        if (!project) return err(`project not in vault: ${args.project_name}`, { status: 'key_not_in_vault' });
+        const entry = (project as Record<string, unknown>)[args.key];
+        if (!entry) return err(`key not in vault: ${args.project_name}.${args.key}`, { status: 'key_not_in_vault' });
+        const raw = entryValue(entry);
+        if (raw === null) return err(`vault entry is malformed: ${args.key}`, { status: 'invalid' });
+        const r = resolveString(raw, snap.vault.shared);
+        if (r.status === 'unresolved') return err(`unresolved shared.* reference for ${args.key}`, { status: 'unresolved' });
+        if (r.status === 'invalid') return err(`invalid value for ${args.key}`, { status: 'invalid' });
+        if (r.status === 'encrypted') return err(`encrypted value for ${args.key}; the Worker cannot decrypt`, { status: 'encrypted' });
+        const vaultModifiedAt = entryModifiedAt(entry);
+        if (
+          !args.force &&
+          args.expected_modified_at &&
+          vaultModifiedAt &&
+          args.expected_modified_at !== vaultModifiedAt
+        ) {
+          return err(
+            `Refused to pull ${args.project_name}.${args.key}: vault advanced since expected_modified_at=${args.expected_modified_at}.`,
+            { status: 'vault_newer', vault_modified_at: vaultModifiedAt, lock_modified_at: args.expected_modified_at }
+          );
+        }
+        // Note: the resolved value is returned as the text body so
+        // the caller can write it. structuredContent omits the value.
+        return ok(r.value as string, {
+          project: args.project_name,
+          key: args.key,
+          status: 'pulled',
+          modified_at: vaultModifiedAt,
+        });
+      } catch (e) {
+        return err((e as Error).message);
+      }
+    }
+  );
+
+  // ── push_secret (worker variant requires explicit value) ────
+  server.registerTool(
+    'push_secret',
+    {
+      title: 'Push a single key into the vault (Worker variant requires `value`)',
+      description:
+        'Push one key into the vault. The Worker has no .env to read from, so `value` is REQUIRED. ' +
+        'Conflict gating: if `expected_modified_at` is supplied and disagrees with the current vault ' +
+        '_modified_at, the push is refused unless force=true. NEVER echoes the value back.',
+      inputSchema: {
+        project_name: z.string().regex(PROJECT_NAME_REGEX),
+        key: z.string().regex(ENV_KEY_REGEX),
+        value: z.string(),
+        expected_modified_at: z.string().optional(),
+        force: z.boolean().optional().default(false),
+      },
+    },
+    async (args) => {
+      try {
+        assertSafeKey(args.project_name, 'project name');
+        assertSafeKey(args.key, 'secret key');
+        const c = getClient(config, request);
+        const owner = await getOwner(c, config);
+        const snap = await c.getVault({ owner, repo: config?.vaultRepo });
+        const existing = (snap.vault.projects || {})[args.project_name]?.[args.key];
+        const vaultModifiedAt = existing ? entryModifiedAt(existing) : null;
+        if (
+          !args.force &&
+          args.expected_modified_at &&
+          vaultModifiedAt &&
+          args.expected_modified_at !== vaultModifiedAt
+        ) {
+          return err(
+            `Refused to push ${args.project_name}.${args.key}: vault advanced since expected_modified_at=${args.expected_modified_at}.`,
+            { status: 'vault_newer', vault_modified_at: vaultModifiedAt, lock_modified_at: args.expected_modified_at }
+          );
+        }
+        const next = JSON.parse(JSON.stringify(snap.vault)) as Vault;
+        next.projects = next.projects || {};
+        if (!Object.prototype.hasOwnProperty.call(next.projects, args.project_name)) {
+          Object.defineProperty(next.projects, args.project_name, {
+            value: {}, writable: true, enumerable: true, configurable: true,
+          });
+        }
+        const proj = next.projects[args.project_name] as Record<string, unknown>;
+        const modifiedAt = nowIso();
+        Object.defineProperty(proj, args.key, {
+          value: { value: args.value, _modified_at: modifiedAt },
+          writable: true, enumerable: true, configurable: true,
+        });
+        await c.putVault(snap, next, `envpact-mcp-worker: push ${args.project_name}.${args.key}`);
+        return ok(`Pushed ${args.project_name}.${args.key}`, {
+          project: args.project_name,
+          key: args.key,
+          status: 'pushed',
+          modified_at: modifiedAt,
+        });
+      } catch (e) {
+        return err((e as Error).message);
+      }
+    }
+  );
+
+  // ── sync_status ──────────────────────────────────────────────
+  server.registerTool(
+    'sync_status',
+    {
+      title: 'Per-key sync status (Worker variant — vault side only)',
+      description:
+        'Report per-key sync status from the vault\'s perspective. Without local state the Worker can ' +
+        'only flag vault_only / synced (when the caller supplies a key list and confirms the values match) ' +
+        'or no-op for missing keys. If `env_example_repo` is supplied, the Worker fetches its .env.example ' +
+        'via Contents API to enumerate the required keys.',
+      inputSchema: {
+        project_name: z.string().regex(PROJECT_NAME_REGEX),
+        env_example_repo: z
+          .string()
+          .optional()
+          .describe('owner/repo slug of the project repo whose .env.example should be read.'),
+        env_example_path: z
+          .string()
+          .optional()
+          .default('.env.example'),
+      },
+    },
+    async (args) => {
+      try {
+        const c = getClient(config, request);
+        const owner = await getOwner(c, config);
+        const snap = await c.getVault({ owner, repo: config?.vaultRepo });
+        const project = (snap.vault.projects || {})[args.project_name] || {};
+
+        let exampleKeys: string[] = [];
+        if (args.env_example_repo) {
+          const text = await c.getRepoFile(args.env_example_repo, args.env_example_path || '.env.example');
+          exampleKeys = parseEnvExampleKeys(text);
+        }
+        const allKeys = Array.from(
+          new Set([...exampleKeys, ...Object.keys(project).filter((k) => !k.startsWith('_'))])
+        ).sort();
+        const keys = allKeys.map((name) => {
+          const entry = (project as Record<string, unknown>)[name];
+          if (!entry) {
+            return { name, status: 'local_only' as const, vault_modified_at: null, lock_modified_at: null };
+          }
+          return {
+            name,
+            status: 'vault_only' as const,
+            vault_modified_at: entryModifiedAt(entry),
+            lock_modified_at: null,
+          };
+        });
+        return ok(
+          `Sync status for ${args.project_name} (${keys.length} key(s); Worker can only see vault side):\n` +
+            keys.map((k) => `  ${k.status.padEnd(14)} ${k.name}`).join('\n'),
+          { project: args.project_name, keys }
+        );
+      } catch (e) {
+        return err((e as Error).message);
+      }
+    }
+  );
+
   return server;
 }
 
-// ───────────────────────────────────────────────────────────────
-// Worker fetch handler
-// ───────────────────────────────────────────────────────────────
-
-/**
- * Handle a single MCP HTTP request. Stateless: a fresh
- * McpServer + transport are spun up per request. The session
- * config (githubToken, vaultOwner, vaultRepo) is parsed once and
- * captured by every tool handler closure.
- */
 async function handleMcp(request: Request): Promise<Response> {
-  // Parse session config from the X-Smithery-Config header (JSON,
-  // base64-encoded — Smithery's standard for URL-published servers).
   let config: SessionConfig | undefined;
   const cfgHeader = request.headers.get('x-smithery-config');
   if (cfgHeader) {
@@ -426,8 +594,6 @@ async function handleMcp(request: Request): Promise<Response> {
 
   const server = buildServer(config, request);
   const transport = new WebStandardStreamableHTTPServerTransport({
-    // Stateless mode — no sessionIdGenerator means each request
-    // is independent. Workers' execution model fits this exactly.
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
   });
@@ -436,7 +602,6 @@ async function handleMcp(request: Request): Promise<Response> {
   try {
     return await transport.handleRequest(request);
   } finally {
-    // Best-effort cleanup; Workers will tear down anyway after fetch returns.
     transport.close().catch(() => undefined);
     server.close().catch(() => undefined);
   }
@@ -454,7 +619,7 @@ const HOMEPAGE_HTML = `<!doctype html>
   h1 { font-size: 1.6rem; }
   a { color: #0969da; }
 </style>
-<h1>🔒 envpact MCP — remote</h1>
+<h1>🔒 envpact MCP — remote (v3)</h1>
 <p>This is the Cloudflare Worker variant of <a href="https://github.com/chirag127/envpact-mcp">envpact-mcp</a>. The MCP endpoint is at <code>/mcp</code>.</p>
 <h2>Configure your AI agent</h2>
 <pre>{
@@ -470,27 +635,23 @@ const HOMEPAGE_HTML = `<!doctype html>
 `;
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, _env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Smithery static server card — bypasses auth-walled scanning.
     if (url.pathname === '/.well-known/mcp/server-card.json') {
       return new Response(JSON.stringify(SERVER_CARD, null, 2), {
         headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' },
       });
     }
 
-    // Friendly homepage at / so visitors aren't confused.
     if (url.pathname === '/' || url.pathname === '') {
       return new Response(HOMEPAGE_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
     }
 
-    // Healthcheck.
     if (url.pathname === '/healthz') {
       return new Response('ok\n', { headers: { 'Content-Type': 'text/plain' } });
     }
 
-    // Everything under /mcp goes to the MCP handler.
     if (url.pathname === '/mcp' || url.pathname.startsWith('/mcp/')) {
       return handleMcp(request);
     }
