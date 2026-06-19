@@ -9,5 +9,5 @@ export const SECRETS_DIR = path.join(CONFIG_DIR, 'secrets');
 export const SECRETS_FILE = path.join(SECRETS_DIR, 'secrets.json');
 export const AGE_KEY_FILE = path.join(CONFIG_DIR, 'age.key');
 
-export const VAULT_SCHEMA_VERSION = 2;
-export const SCHEMA_URL = 'https://envpact.oriz.in/schema/v2.json';
+export const VAULT_SCHEMA_VERSION = 3;
+export const SCHEMA_URL = 'https://envpact.oriz.in/schema/v3.json';

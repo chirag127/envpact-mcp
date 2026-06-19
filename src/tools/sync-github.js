@@ -1,5 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import path from 'node:path';
 import { loadVault, pullVault, detectProjectFromGit } from '../lib/vault.js';
 import { resolveProject } from '../lib/resolver.js';
 import { syncResolved } from '../lib/github.js';
@@ -15,7 +14,7 @@ function detectRepoSlug(cwd) {
   return null;
 }
 
-export async function syncGithubHandler({ project_name, environment, repo_slug }) {
+export async function syncGithubHandler({ project_name, repo_slug }) {
   try {
     const cwd = process.cwd();
     const project = (project_name || detectProjectFromGit(cwd)).toLowerCase();
@@ -27,24 +26,21 @@ export async function syncGithubHandler({ project_name, environment, repo_slug }
     }
     pullVault();
     const vault = loadVault();
-    const result = resolveProject(vault, project, environment);
+    const result = resolveProject(vault, project);
     if (Object.keys(result.resolved).length === 0) {
       throw new Error(`No resolved secrets for project ${project}.`);
     }
-    const { count, errors } = syncResolved(slug, result.resolved, {
-      environment,
-    });
+    const { count, errors } = syncResolved(slug, result.resolved);
     return {
       content: [
         {
           type: 'text',
           text:
             `Synced ${count}/${Object.keys(result.resolved).length} secrets to ${slug}` +
-            (environment ? ` (env: ${environment})` : '') +
             (errors.length ? `\nErrors: ${errors.map((e) => e.key).join(', ')}` : ''),
         },
       ],
-      structuredContent: { repo_slug: slug, project, environment, count, errors },
+      structuredContent: { repo_slug: slug, project, count, errors },
     };
   } catch (e) {
     return { isError: true, content: [{ type: 'text', text: `error: ${e.message}` }] };

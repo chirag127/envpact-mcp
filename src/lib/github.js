@@ -5,20 +5,19 @@ export function ghAuthOk() {
   return r.status === 0;
 }
 
-export function setSecret(repoSlug, key, value, opts = {}) {
+export function setSecret(repoSlug, key, value) {
   if (!ghAuthOk()) throw new Error('gh CLI not authenticated. Run: gh auth login');
   const args = ['secret', 'set', key, '--body', value];
   if (repoSlug) args.push('--repo', repoSlug);
-  if (opts.environment) args.push('--env', opts.environment);
   execFileSync('gh', args, { stdio: ['ignore', 'ignore', 'pipe'] });
 }
 
-export function syncResolved(repoSlug, resolved, opts = {}) {
+export function syncResolved(repoSlug, resolved) {
   let count = 0;
   const errors = [];
   for (const [key, value] of Object.entries(resolved)) {
     try {
-      setSecret(repoSlug, key, value, opts);
+      setSecret(repoSlug, key, value);
       count++;
     } catch (e) {
       errors.push({ key, error: String(e.message) });

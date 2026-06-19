@@ -41,13 +41,14 @@ async function main() {
     {
       capabilities: { tools: {} },
       instructions:
-        'envpact MCP server — manage centralized secrets stored in your private GitHub vault. ' +
-        'Use generate_env to write a .env for the current project, list_projects/list_shared to ' +
-        'inspect the vault, add_secret/add_shared_secret to mutate it, rotate_secret to rotate a ' +
-        'shared key, and sync_github to push secrets to GitHub Actions. ' +
-        'Vault values referencing other vault entries use a "shared.KEY" syntax. ' +
-        'Per-environment values are nested objects with "development"/"staging"/"production" keys. ' +
-        'Never echo secret values back; use list_shared (which masks values) for inventory.',
+        'envpact MCP server — manage centralized secrets stored in your private GitHub vault (v3 schema). ' +
+        'The vault is flat and single-environment per project; per-key timestamps power conflict detection. ' +
+        'Tools: generate_env writes a project .env from the vault; list_projects/list_shared inspect the vault; ' +
+        'add_secret/add_shared_secret mutate it; rotate_secret rotates a shared key; sync_github pushes to GitHub Actions; ' +
+        'pull_secret/push_secret do per-key sync between .env and vault with conflict refusal (override with force=true); ' +
+        'sync_status reports per-key state (synced/local_newer/vault_newer/both_diverged/local_only/vault_only). ' +
+        'Vault values referencing other vault entries use the "shared.KEY" syntax. ' +
+        'NEVER echo secret values back; list_shared masks values.',
     }
   );
 

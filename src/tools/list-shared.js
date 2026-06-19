@@ -1,4 +1,4 @@
-import { loadVault, pullVault } from '../lib/vault.js';
+import { loadVault, pullVault, entryValue } from '../lib/vault.js';
 import { ENC_PREFIX } from '../lib/resolver.js';
 
 export async function listSharedHandler() {
@@ -6,10 +6,13 @@ export async function listSharedHandler() {
     pullVault();
     const vault = loadVault();
     const items = Object.entries(vault.shared || {})
-      .map(([name, value]) => ({
-        name,
-        encrypted: typeof value === 'string' && value.startsWith(ENC_PREFIX),
-      }))
+      .map(([name, entry]) => {
+        const v = entryValue(entry);
+        return {
+          name,
+          encrypted: typeof v === 'string' && v.startsWith(ENC_PREFIX),
+        };
+      })
       .sort((a, b) => a.name.localeCompare(b.name));
     return {
       content: [

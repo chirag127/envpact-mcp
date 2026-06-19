@@ -1,11 +1,9 @@
 import path from 'node:path';
 import {
   loadVault,
-  saveVault,
   pullVault,
-  commitAndPushVault,
-  detectProjectFromGit,
   ensureProjectExists,
+  detectProjectFromGit,
 } from '../lib/vault.js';
 import { resolveProject } from '../lib/resolver.js';
 import { parseEnvExample, renderEnv, writeEnvAtomic, ensureGitignoreCovers } from '../lib/envwriter.js';
@@ -43,7 +41,7 @@ export async function generateEnvHandler(args) {
     ensureProjectExists(vault, project);
 
     const requiredKeys = parseEnvExample(examplePath);
-    const result = resolveProject(vault, project, args.environment);
+    const result = resolveProject(vault, project);
 
     if (result.encrypted && result.encrypted.length > 0) {
       return err(
@@ -53,7 +51,6 @@ export async function generateEnvHandler(args) {
           `materialise this .env.`,
         {
           project,
-          environment: result.environment,
           encrypted: result.encrypted,
         }
       );
@@ -62,23 +59,19 @@ export async function generateEnvHandler(args) {
     const orderedKeys = requiredKeys.length ? requiredKeys : Object.keys(result.resolved);
     const missingKeys = orderedKeys.filter((k) => !(k in result.resolved));
 
-    const content = renderEnv(orderedKeys, result.resolved, {
-      environment: result.environment,
-      project,
-    });
+    const content = renderEnv(orderedKeys, result.resolved, { project });
     writeEnvAtomic(outputAbs, content);
     ensureGitignoreCovers(cwdAbs, '.env');
 
     return ok(
       `Wrote ${Object.keys(result.resolved).length} keys to ${outputAbs} ` +
-        `(env=${result.environment}, project=${project}). ` +
+        `(project=${project}). ` +
         (missingKeys.length
           ? `${missingKeys.length} key(s) still missing: ${missingKeys.join(', ')}. ` +
             `Use add_secret to provide them.`
           : 'All keys resolved.'),
       {
         project,
-        environment: result.environment,
         output_path: outputAbs,
         resolved_count: Object.keys(result.resolved).length,
         missing: missingKeys,

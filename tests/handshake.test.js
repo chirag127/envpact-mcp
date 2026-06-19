@@ -30,7 +30,7 @@ function rpcCall(server, message) {
   });
 }
 
-test('MCP server: initialize + tools/list returns all 8 tools', async () => {
+test('MCP server: initialize + tools/list returns all 10 v3 tools', async () => {
   const server = spawn(process.execPath, [SERVER], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, ENVPACT_TEST: '1' },
@@ -62,12 +62,16 @@ test('MCP server: initialize + tools/list returns all 8 tools', async () => {
       'add_secret',
       'add_shared_secret',
       'generate_env',
-      'list_environments',
       'list_projects',
       'list_shared',
+      'pull_secret',
+      'push_secret',
       'rotate_secret',
       'sync_github',
+      'sync_status',
     ]);
+    // list_environments must be gone.
+    assert.equal(names.includes('list_environments'), false);
   } finally {
     server.kill();
   }
