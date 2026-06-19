@@ -2,11 +2,19 @@
  * envpact-mcp tools — central registry. Each tool maps the JSON
  * schemas in SHARED_SPEC.md §7 to a handler function.
  *
- * v3: list_environments is GONE. The `environment` parameter is
- * removed from every tool. Three new tools are added:
+ * v3 (0.3.0): list_environments is GONE. The `environment`
+ * parameter is removed from every tool. Three tools added:
  *   - pull_secret  (per-key vault → .env)
  *   - push_secret  (per-key .env → vault)
  *   - sync_status  (per-key state report)
+ *
+ * v3.1 (0.4.0, additive UX): one new tool, no schema change:
+ *   - generate_global_env  (writes ~/.envpact/.env from
+ *     ~/.envpact/.env.example.global per SHARED_SPEC §1.6/§5.1)
+ *
+ * Conflict messages from pull_secret / push_secret / sync_status
+ * now carry both UTC + IST timestamps and a `recommended_side`
+ * hint per SHARED_SPEC §1.5.
  */
 import { generateEnvHandler } from './generate-env.js';
 import { listProjectsHandler } from './list-projects.js';
@@ -18,6 +26,7 @@ import { syncGithubHandler } from './sync-github.js';
 import { pullSecretHandler } from './pull-secret.js';
 import { pushSecretHandler } from './push-secret.js';
 import { syncStatusHandler } from './sync-status.js';
+import { generateGlobalEnvHandler } from './generate-global-env.js';
 
 // Validation regexes — first line of defence for MCP input. The vault
 // layer applies a structural assertSafeKey check as the second layer
@@ -211,7 +220,8 @@ export function registerTools(server, z) {
       description:
         'Walk .env.example keys and report per-key sync status: synced / local_newer / vault_newer / ' +
         'both_diverged / local_only / vault_only. Read-only — never writes anything. NEVER returns ' +
-        'secret values, only statuses and timestamps.',
+        'secret values. Each entry carries vault_modified_at / lock_modified_at in BOTH UTC and IST ' +
+        '(per SHARED_SPEC §1.5).',
       inputSchema: {
         project_name: z
           .string()
@@ -225,5 +235,28 @@ export function registerTools(server, z) {
       },
     },
     syncStatusHandler
+  );
+
+  server.registerTool(
+    'generate_global_env',
+    {
+      title: 'Generate ~/.envpact/.env from the vault\'s shared.* entries',
+      description:
+        'Mirror every shared secret in the vault into a single ~/.envpact/.env, generated from ' +
+        '~/.envpact/.env.example.global (per SHARED_SPEC §1.6 / §5.1, v3.1). Creates the example ' +
+        'template on first run, listing every shared.* key alphabetically. Encrypted (enc:*) values ' +
+        'are emitted as `# KEY: encrypted` comments — decrypt via envpact-cli on a host with the age ' +
+        'identity. The output file is written with mode 0600 (best-effort on Windows). NEVER returns ' +
+        'secret values.',
+      inputSchema: {
+        output_path: z
+          .string()
+          .optional()
+          .describe(
+            'Override the output path. Defaults to ~/.envpact/.env. Most users should leave this empty.'
+          ),
+      },
+    },
+    generateGlobalEnvHandler
   );
 }

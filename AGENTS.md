@@ -15,6 +15,10 @@ The canonical spec lives at
 - **Vault**: v3 schema — flat, single-environment per project,
   per-key `{value, _modified_at}` entries. v1/v2 vaults
   auto-upgrade in memory on first read (see SHARED_SPEC §1.4).
+  v3.1 (2026-06-19) adds UX layers on top with NO on-disk schema
+  change: dual-render timestamps (UTC + IST) on every conflict
+  prompt (§1.5) and a global vault `.env` at `~/.envpact/.env`
+  mirroring every shared.* key (§1.6 / §5.1).
   The same `~/.envpact/secrets/secrets.json` that envpact-cli
   uses. The MCP server pulls before reads and pushes after
   writes.
@@ -24,22 +28,33 @@ The canonical spec lives at
 - **Per-key sync**: `src/lib/sync.js` implements pull/push/status
   with `.env.example.lock` as the per-key state sidecar. Conflict
   states: `local_newer`, `vault_newer`, `both_diverged`,
-  `local_only`, `vault_only`, `synced`.
+  `local_only`, `vault_only`, `synced`. Conflict refusals from
+  `pull_secret` and `push_secret` now carry both UTC and IST
+  timestamps plus a `recommended_side` hint set to whichever
+  timestamp is newer (v3.1).
+- **Global env**: `src/lib/global-env.js` +
+  `src/tools/generate-global-env.js` mirror every `shared.*`
+  entry into `~/.envpact/.env`, byte-faithful from
+  `~/.envpact/.env.example.global`.
 - **Transport**: stdio MCP (primary). Optional Cloudflare Worker
   variant in `worker/` for remote Streamable HTTP.
 
 ## Key Files
 
 - `src/index.js` — server bootstrap (McpServer + StdioServerTransport).
-- `src/tools/index.js` — tool registry (registers 10 tools with Zod schemas).
+- `src/tools/index.js` — tool registry (registers 11 tools with Zod schemas).
 - `src/tools/<tool>.js` — one handler per tool.
 - `src/lib/resolver.js` — v3 resolution algorithm (mirrors CLI).
 - `src/lib/vault.js` — load/save/pull/push, in-memory v1/v2 → v3 upgrade.
 - `src/lib/sync.js` — per-key pull/push pipeline + status classifier.
 - `src/lib/envwriter.js` — `.env` file generation, `parseEnvFileToMap`,
   `upsertEnvKey` for per-key writes.
+- `src/lib/timestamps.js` — UTC + IST dual-render helper (v3.1).
+- `src/lib/global-env.js` — global `~/.envpact/.env` generator (v3.1).
 - `src/lib/github.js` — `gh secret set` integration.
-- `worker/` — Cloudflare Worker for remote MCP (optional).
+- `worker/` — Cloudflare Worker for remote MCP. Deployed at
+  `mcp.envpact.oriz.in`, published to Smithery at
+  `@chirag127/envpact-mcp`.
 
 ## Conventions
 
@@ -70,7 +85,7 @@ Tests cover:
   vault, with explicit no-value-leak assertions on the response
   payloads.
 - Live MCP handshake (spawns the actual server, sends
-  initialize + tools/list, asserts all 10 tools register).
+  initialize + tools/list, asserts all 11 tools register).
 
 ## Adding a New Tool
 

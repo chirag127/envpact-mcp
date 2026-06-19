@@ -2,6 +2,72 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-06-19
+
+### Added (additive UX — no schema change)
+
+- **`generate_global_env(output_path?)`** — 11th tool. Mirrors every
+  `shared.*` entry in the vault into a single global file at
+  `~/.envpact/.env`, generated from `~/.envpact/.env.example.global`
+  (auto-created on first run with an alphabetical KEY= list of every
+  shared key). Byte-faithful template format (per SHARED_SPEC §5.1):
+  comments and blank lines copy verbatim, `KEY=hint` lines render as
+  `KEY=<value>` with quoting per §5, encrypted (`enc:*`) values
+  emit `# KEY: encrypted — decrypt-via-cli` instead of leaking
+  ciphertext, missing keys emit `# KEY: not in vault`. Output is
+  written with mode 0600 (best-effort on Windows). Returns
+  `{output_path, resolved_count, encrypted, not_in_vault,
+  generated_global_example}` — never the values themselves.
+- **`src/lib/timestamps.js`** — `formatTimestamp(iso)` and
+  `newerSide(a, b)` helpers. IST is computed as a pure additive
+  offset (UTC + 5h30m) so the rendering does NOT depend on the host
+  timezone, per SHARED_SPEC §1.5.
+- **`src/lib/global-env.js`** — `ensureGlobalExample` and
+  `generateGlobalEnv` helpers used by the new tool.
+- **`tests/timestamps.test.js`** (10 tests) — covers UTC/IST
+  rendering, midnight rollover, malformed input, host-TZ
+  independence, and `newerSide` tie/missing semantics.
+- **`tests/generate-global-env.test.js`** (8 tests) — covers
+  alphabetical example creation, byte-faithful rendering, encrypted
+  comment fallback, missing-vault fallback, file-on-disk
+  verification, and the no-value-leak contract.
+
+### Changed (additive — back-compat preserved)
+
+- **`pull_secret` and `push_secret` conflict refusals** now include
+  both the canonical UTC ISO timestamp AND a human IST rendering
+  (`YYYY-MM-DD HH:MM:SS IST`) for the vault and local sides, plus a
+  `recommended_side: "vault" | "local"` hint set to whichever side
+  is newer. The legacy `vault_modified_at` / `lock_modified_at`
+  fields are kept for back-compat with 0.3.x agents.
+- **`sync_status`** per-key entries now carry
+  `vault_modified_at_ist` and `lock_modified_at_ist` alongside the
+  existing UTC fields.
+- **Worker** ported to v3.1: 11 tools, conflict messages render
+  IST + recommended_side, `generate_global_env` returns the rendered
+  text body (no filesystem to write to). User-Agent bumped to
+  `envpact-mcp-worker/0.4.0`. Static server card at
+  `/.well-known/mcp/server-card.json` advertises 11 tools.
+- **mcpb manifest version** bumped to 0.4.0; `dist/envpact-mcp.mcpb`
+  rebuilt with all 11 tools spliced in for Smithery's tool-list
+  scan.
+
+### Tool count
+
+- 0.3.0 had 10 tools. **0.4.0 has 11**: `generate_env`,
+  `list_projects`, `list_shared`, `add_secret`,
+  `add_shared_secret`, `rotate_secret`, `sync_github`,
+  `pull_secret`, `push_secret`, `sync_status`,
+  **`generate_global_env`**.
+
+### Smithery
+
+- Re-published from `https://mcp.envpact.oriz.in/mcp` so the
+  marketplace listing at https://smithery.ai/server/@chirag127/envpact-mcp
+  reflects the 11-tool surface (was previously stuck at `tools: null`
+  because the 0.3.0 listing had not been re-scanned after
+  ffc3ad7's manifest splice fix).
+
 ## [0.3.0] - 2026-06-19
 
 ### Changed (BREAKING)
@@ -123,6 +189,7 @@ All notable changes to this project will be documented in this file.
   Goose, and any MCP 2025-06-18 protocol client.
 - Optional Cloudflare Worker variant for remote SSE/HTTP transport.
 
+[0.4.0]: https://github.com/chirag127/envpact-mcp/releases/tag/v0.4.0
 [0.3.0]: https://github.com/chirag127/envpact-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/chirag127/envpact-mcp/releases/tag/v0.2.0
 [0.1.0]: https://github.com/chirag127/envpact-mcp/releases/tag/v0.1.0

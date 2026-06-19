@@ -30,7 +30,7 @@ function rpcCall(server, message) {
   });
 }
 
-test('MCP server: initialize + tools/list returns all 10 v3 tools', async () => {
+test('MCP server: initialize + tools/list returns all 11 v3.1 tools', async () => {
   const server = spawn(process.execPath, [SERVER], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, ENVPACT_TEST: '1' },
@@ -62,6 +62,7 @@ test('MCP server: initialize + tools/list returns all 10 v3 tools', async () => 
       'add_secret',
       'add_shared_secret',
       'generate_env',
+      'generate_global_env',
       'list_projects',
       'list_shared',
       'pull_secret',

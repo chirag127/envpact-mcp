@@ -11,15 +11,19 @@
  * independently fetches the vault via the GitHub Contents API
  * using the caller's token.
  *
- * v3 tool surface (10 tools total):
+ * v3 tool surface (11 tools total):
  *   generate_env, list_projects, list_shared, add_secret,
  *   add_shared_secret, rotate_secret, sync_github,
- *   pull_secret, push_secret, sync_status
+ *   pull_secret, push_secret, sync_status, generate_global_env
  *
  * Worker-specific deviations from the stdio variant (documented
  * in each tool's description):
  *   - generate_env returns the resolved .env content as text
  *     (the Worker has no filesystem to write to).
+ *   - generate_global_env (v3.1) returns the resolved
+ *     ~/.envpact/.env body as text, since the Worker has no
+ *     filesystem to mode-0600. The caller writes it to disk
+ *     locally. Same template format as the stdio variant.
  *   - pull_secret reads .env.example via the GitHub Contents API
  *     of the *target* project repo (slug supplied or auto-detected
  *     from session config), and returns the resolved value as text
@@ -109,6 +113,48 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+// ── Timestamp helper (v3.1, SHARED_SPEC §1.5) ──────────────────
+//
+// IST is computed without depending on the host TZ — Asia/Kolkata
+// is UTC+05:30 with no DST. Mirror of envpact-mcp/src/lib/timestamps.js.
+function formatTimestamp(iso: string): { utc: string; ist: string | null } {
+  if (typeof iso !== 'string' || iso === '') {
+    return { utc: '', ist: null };
+  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return { utc: iso, ist: null };
+  const istEpoch = d.getTime() + (5 * 60 + 30) * 60 * 1000;
+  const ist = new Date(istEpoch);
+  const yyyy = ist.getUTCFullYear();
+  const mm = String(ist.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(ist.getUTCDate()).padStart(2, '0');
+  const hh = String(ist.getUTCHours()).padStart(2, '0');
+  const mi = String(ist.getUTCMinutes()).padStart(2, '0');
+  const ss = String(ist.getUTCSeconds()).padStart(2, '0');
+  return { utc: iso, ist: `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss} IST` };
+}
+
+function safeIst(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  return formatTimestamp(iso).ist;
+}
+
+function newerSide(a: string | null | undefined, b: string | null | undefined): 'a' | 'b' | 'tie' {
+  const parse = (s: string | null | undefined): number | null => {
+    if (!s) return null;
+    const t = new Date(s).getTime();
+    return Number.isNaN(t) ? null : t;
+  };
+  const ta = parse(a);
+  const tb = parse(b);
+  if (ta === null && tb === null) return 'tie';
+  if (ta === null) return 'b';
+  if (tb === null) return 'a';
+  if (ta > tb) return 'a';
+  if (tb > ta) return 'b';
+  return 'tie';
+}
+
 // ── Light .env.example parser (no fs) ──────────────────────────
 function parseEnvExampleKeys(text: string | null): string[] {
   if (!text) return [];
@@ -126,14 +172,15 @@ function parseEnvExampleKeys(text: string | null): string[] {
 
 function buildServer(config: SessionConfig | undefined, request?: Request) {
   const server = new McpServer(
-    { name: 'envpact', version: '0.3.0', websiteUrl: 'https://envpact.oriz.in' },
+    { name: 'envpact', version: '0.4.0', websiteUrl: 'https://envpact.oriz.in' },
     {
       capabilities: { tools: {} },
       instructions:
         'envpact MCP — manage secrets in your private GitHub vault (v3 schema, flat single-environment with ' +
-        'per-key timestamps). NEVER ECHO SECRET VALUES; list_shared masks them. Tools: generate_env, ' +
-        'list_projects, list_shared, add_secret, add_shared_secret, rotate_secret, sync_github, ' +
-        'pull_secret, push_secret, sync_status. Reference shared values via shared.KEY syntax.',
+        'per-key timestamps; v3.1 UX additions render timestamps in BOTH UTC + IST and add a global vault .env). ' +
+        'NEVER ECHO SECRET VALUES; list_shared masks them. Tools: generate_env, list_projects, list_shared, ' +
+        'add_secret, add_shared_secret, rotate_secret, sync_github, pull_secret, push_secret, sync_status, ' +
+        'generate_global_env. Reference shared values via shared.KEY syntax.',
     }
   );
 
@@ -434,10 +481,33 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
           vaultModifiedAt &&
           args.expected_modified_at !== vaultModifiedAt
         ) {
-          return err(
+          const vaultIst = safeIst(vaultModifiedAt);
+          const localIst = safeIst(args.expected_modified_at);
+          const recommended =
+            newerSide(vaultModifiedAt, args.expected_modified_at) === 'a'
+              ? 'vault'
+              : 'local';
+          const lines = [
             `Refused to pull ${args.project_name}.${args.key}: vault advanced since expected_modified_at=${args.expected_modified_at}.`,
-            { status: 'vault_newer', vault_modified_at: vaultModifiedAt, lock_modified_at: args.expected_modified_at }
-          );
+            '',
+          ];
+          if (vaultModifiedAt) {
+            lines.push(`  Vault:  ${vaultModifiedAt}`);
+            if (vaultIst) lines.push(`          → ${vaultIst}${recommended === 'vault' ? '   (Recommended — newer)' : ''}`);
+          }
+          if (args.expected_modified_at) {
+            lines.push(`  Local:  ${args.expected_modified_at}`);
+            if (localIst) lines.push(`          → ${localIst}${recommended === 'local' ? '   (Recommended — newer)' : ''}`);
+          }
+          return err(lines.join('\n'), {
+            status: 'vault_newer',
+            vault_modified_at: vaultModifiedAt,
+            vault_modified_at_ist: vaultIst,
+            local_modified_at: args.expected_modified_at,
+            local_modified_at_ist: localIst,
+            lock_modified_at: args.expected_modified_at,
+            recommended_side: recommended,
+          });
         }
         // Note: the resolved value is returned as the text body so
         // the caller can write it. structuredContent omits the value.
@@ -446,6 +516,7 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
           key: args.key,
           status: 'pulled',
           modified_at: vaultModifiedAt,
+          modified_at_ist: safeIst(vaultModifiedAt),
         });
       } catch (e) {
         return err((e as Error).message);
@@ -485,10 +556,33 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
           vaultModifiedAt &&
           args.expected_modified_at !== vaultModifiedAt
         ) {
-          return err(
+          const vaultIst = safeIst(vaultModifiedAt);
+          const localIst = safeIst(args.expected_modified_at);
+          const recommended =
+            newerSide(vaultModifiedAt, args.expected_modified_at) === 'a'
+              ? 'vault'
+              : 'local';
+          const lines = [
             `Refused to push ${args.project_name}.${args.key}: vault advanced since expected_modified_at=${args.expected_modified_at}.`,
-            { status: 'vault_newer', vault_modified_at: vaultModifiedAt, lock_modified_at: args.expected_modified_at }
-          );
+            '',
+          ];
+          if (vaultModifiedAt) {
+            lines.push(`  Vault:  ${vaultModifiedAt}`);
+            if (vaultIst) lines.push(`          → ${vaultIst}${recommended === 'vault' ? '   (Recommended — newer)' : ''}`);
+          }
+          if (args.expected_modified_at) {
+            lines.push(`  Local:  ${args.expected_modified_at}`);
+            if (localIst) lines.push(`          → ${localIst}${recommended === 'local' ? '   (Recommended — newer)' : ''}`);
+          }
+          return err(lines.join('\n'), {
+            status: 'vault_newer',
+            vault_modified_at: vaultModifiedAt,
+            vault_modified_at_ist: vaultIst,
+            local_modified_at: args.expected_modified_at,
+            local_modified_at_ist: localIst,
+            lock_modified_at: args.expected_modified_at,
+            recommended_side: recommended,
+          });
         }
         const next = JSON.parse(JSON.stringify(snap.vault)) as Vault;
         next.projects = next.projects || {};
@@ -509,6 +603,7 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
           key: args.key,
           status: 'pushed',
           modified_at: modifiedAt,
+          modified_at_ist: safeIst(modifiedAt),
         });
       } catch (e) {
         return err((e as Error).message);
@@ -556,13 +651,23 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
         const keys = allKeys.map((name) => {
           const entry = (project as Record<string, unknown>)[name];
           if (!entry) {
-            return { name, status: 'local_only' as const, vault_modified_at: null, lock_modified_at: null };
+            return {
+              name,
+              status: 'local_only' as const,
+              vault_modified_at: null,
+              vault_modified_at_ist: null,
+              lock_modified_at: null,
+              lock_modified_at_ist: null,
+            };
           }
+          const mt = entryModifiedAt(entry);
           return {
             name,
             status: 'vault_only' as const,
-            vault_modified_at: entryModifiedAt(entry),
+            vault_modified_at: mt,
+            vault_modified_at_ist: safeIst(mt),
             lock_modified_at: null,
+            lock_modified_at_ist: null,
           };
         });
         return ok(
@@ -570,6 +675,107 @@ function buildServer(config: SessionConfig | undefined, request?: Request) {
             keys.map((k) => `  ${k.status.padEnd(14)} ${k.name}`).join('\n'),
           { project: args.project_name, keys }
         );
+      } catch (e) {
+        return err((e as Error).message);
+      }
+    }
+  );
+
+  // ── generate_global_env (v3.1, Worker variant returns text) ─
+  server.registerTool(
+    'generate_global_env',
+    {
+      title: 'Render the vault\'s shared.* entries as a global .env body (Worker returns text)',
+      description:
+        'Render every shared.* entry in the vault into a global .env body and return it as the response ' +
+        'TEXT BODY. The Worker has no filesystem so it cannot write ~/.envpact/.env directly — the caller ' +
+        'is responsible for persisting the returned text with mode 0600. If `example_text` is supplied it ' +
+        'is treated as a byte-faithful template (per SHARED_SPEC §5.1); otherwise an alphabetical KEY= list ' +
+        'of every shared.* key is generated. NEVER returns the structuredContent values inline — only the ' +
+        'rendered text body and counts.',
+      inputSchema: {
+        example_text: z
+          .string()
+          .optional()
+          .describe(
+            'Optional byte-faithful .env.example.global template. If omitted, the Worker emits an alphabetical KEY= list of every shared.* key in the vault.'
+          ),
+      },
+    },
+    async (args) => {
+      try {
+        const c = getClient(config, request);
+        const owner = await getOwner(c, config);
+        const snap = await c.getVault({ owner, repo: config?.vaultRepo });
+        const shared = (snap.vault.shared || {}) as Record<string, unknown>;
+
+        let exampleText: string;
+        let generatedExample = false;
+        if (typeof args.example_text === 'string' && args.example_text.length > 0) {
+          exampleText = args.example_text;
+          if (!exampleText.endsWith('\n')) exampleText += '\n';
+        } else {
+          const keys = Object.keys(shared).filter((k) => !k.startsWith('_')).sort();
+          exampleText = keys.length ? keys.map((k) => `${k}=`).join('\n') + '\n' : '';
+          generatedExample = true;
+        }
+
+        const ENC = 'enc:';
+        const needsQuote = (v: string) =>
+          v === '' || /[\s#"'\\]/.test(v) || /^\s|\s$/.test(v) || /[\n\r]/.test(v);
+        const escape = (v: string) =>
+          v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+        const fmt = (v: string) => (needsQuote(v) ? `"${escape(v)}"` : v);
+
+        const outLines: string[] = [];
+        const encrypted: string[] = [];
+        const notInVault: string[] = [];
+        let resolved = 0;
+
+        for (const raw of exampleText.split(/\r?\n/)) {
+          const trimmed = raw.trim();
+          if (trimmed === '') { outLines.push(raw); continue; }
+          if (trimmed.startsWith('#')) { outLines.push(raw); continue; }
+          const eq = raw.indexOf('=');
+          if (eq < 0) { outLines.push(raw); continue; }
+          const key = raw.slice(0, eq).trim();
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) { outLines.push(raw); continue; }
+          if (!Object.prototype.hasOwnProperty.call(shared, key)) {
+            outLines.push(`# ${key}: not in vault`);
+            notInVault.push(key);
+            continue;
+          }
+          const v = entryValue(shared[key]);
+          if (v === null) {
+            outLines.push(`# ${key}: malformed entry`);
+            notInVault.push(key);
+            continue;
+          }
+          if (v.startsWith(ENC)) {
+            outLines.push(`# ${key}: encrypted — decrypt-via-cli`);
+            encrypted.push(key);
+            continue;
+          }
+          outLines.push(`${key}=${fmt(v)}`);
+          resolved += 1;
+        }
+
+        const trailingNl = /\n$/.test(exampleText);
+        let body = outLines.join('\n');
+        if (trailingNl && !body.endsWith('\n')) body += '\n';
+
+        const header =
+          `# Generated by envpact-mcp-worker (global) on ${nowIso()}\n` +
+          `# DO NOT COMMIT — managed by envpact\n`;
+        const sep = body.startsWith('\n') || body === '' ? '' : '\n';
+        const text = header + sep + body;
+
+        return ok(text, {
+          resolved_count: resolved,
+          encrypted,
+          not_in_vault: notInVault,
+          generated_global_example: generatedExample,
+        });
       } catch (e) {
         return err((e as Error).message);
       }

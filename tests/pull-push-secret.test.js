@@ -79,6 +79,13 @@ test('pull_secret — refuses LOCAL_NEWER without force, surfaces conflict', asy
   assert.match(res.content[0].text, /force=true/);
   // No values leaked.
   assert.equal(JSON.stringify(res).includes('user-edit'), false);
+  // v3.1: IST timestamps + recommended_side surfaced.
+  assert.equal(res.structuredContent.vault_modified_at, TS_OLD);
+  assert.match(res.structuredContent.vault_modified_at_ist, / IST$/);
+  assert.match(res.structuredContent.local_modified_at_ist, / IST$/);
+  assert.ok(['vault', 'local'].includes(res.structuredContent.recommended_side));
+  // Both tz renderings should appear in the human text.
+  assert.match(res.content[0].text, /IST/);
 });
 
 test('pull_secret — force=true overrides the refusal', async () => {
@@ -174,5 +181,41 @@ test('sync_status — returns per-key statuses, no values', async () => {
   // Strict check: the LOCAL_ONLY entry should not carry a `value` field.
   for (const k of keys) {
     assert.equal('value' in k, false, `key ${k.name} leaked a value field`);
+    // v3.1: every entry exposes the IST renderings (may be null).
+    assert.ok('vault_modified_at_ist' in k);
+    assert.ok('lock_modified_at_ist' in k);
   }
+  const tracked = keys.find((k) => k.name === 'OPENAI_API_KEY');
+  assert.match(tracked.vault_modified_at_ist, / IST$/);
+  assert.match(tracked.lock_modified_at_ist, / IST$/);
+});
+
+test('push_secret — refuses VAULT_NEWER without force, surfaces IST conflict', async () => {
+  // Vault advanced past the lock baseline.
+  writeVault({
+    version: 3,
+    shared: {},
+    projects: { 'my-app': { K: { value: 'vault-new', _modified_at: TS_NEW } } },
+    metadata: { updated_at: TS_NEW },
+  });
+  const dir = makeProj({ env: 'K=user-edit\n' });
+  const lock = loadLock(dir);
+  setLockEntry(lock, 'K', TS_OLD);
+  saveLock(dir, lock);
+
+  const res = await pushSecretHandler({
+    project_name: 'my-app',
+    key: 'K',
+    value: 'user-edit',
+    working_directory: dir,
+  });
+  assert.equal(res.isError, true);
+  assert.equal(res.structuredContent.status, 'vault_newer');
+  // IST renderings present.
+  assert.match(res.structuredContent.vault_modified_at_ist, / IST$/);
+  assert.match(res.structuredContent.local_modified_at_ist, / IST$/);
+  // Vault is newer, so recommended_side is 'vault'.
+  assert.equal(res.structuredContent.recommended_side, 'vault');
+  // Human text mentions IST too.
+  assert.match(res.content[0].text, /IST/);
 });

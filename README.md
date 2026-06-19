@@ -111,8 +111,25 @@ npx envpact-cli --init auto
 | `pull_secret` | Pull one key from vault → `.env` (per-key, conflict-safe). |
 | `push_secret` | Push one key from `.env` → vault (per-key, conflict-safe). |
 | `sync_status` | Report per-key sync status across `.env.example`. |
+| `generate_global_env` | Mirror every shared secret into `~/.envpact/.env` (v3.1). |
 
 Schema details: see [SHARED_SPEC §7](https://github.com/chirag127/envpact/blob/main/_build/specs/SHARED_SPEC.md).
+
+## v3.1 UX additions
+
+- **Dual-render timestamps (UTC + IST).** Every conflict refusal
+  from `pull_secret` / `push_secret` and every entry in
+  `sync_status` now carries the canonical UTC ISO string AND a
+  human IST rendering (`YYYY-MM-DD HH:MM:SS IST`). Conflict
+  payloads also expose `recommended_side: "vault" | "local"`
+  set to whichever side is newer. The user keeps the final
+  decision; `recommended_side` is just a hint.
+- **Global vault `.env`.** `generate_global_env` mirrors every
+  `shared.*` entry into a single file at `~/.envpact/.env`,
+  generated from `~/.envpact/.env.example.global` (auto-created
+  on first run, byte-faithful template format). Encrypted values
+  emit `# KEY: encrypted` comments; missing keys emit `# KEY:
+  not in vault`. Output is mode 0600 (best-effort on Windows).
 
 ## Per-key Sync (v3)
 
@@ -158,10 +175,14 @@ time without touching the rest of `.env`:
 
 ## Remote / SSE Variant
 
-A Cloudflare Worker variant supporting MCP over Streamable HTTP +
-SSE is planned for v0.2.0. Track it at
-[#1](https://github.com/chirag127/envpact-mcp/issues/1). For now,
-stdio is the only supported transport.
+A Cloudflare Worker variant supporting MCP over Streamable HTTP is
+deployed at `https://mcp.envpact.oriz.in/mcp` and listed on
+Smithery at `https://smithery.ai/server/@chirag127/envpact-mcp`.
+The Worker exposes the same 11 tools, with two natural Worker
+deviations: `pull_secret` returns the resolved value as the
+response text body (no `.env` to write), and `generate_global_env`
+returns the rendered global `.env` body as text instead of writing
+to disk. See `worker/README.md` for the full deviation list.
 
 ## Security Model
 

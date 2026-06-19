@@ -7,14 +7,18 @@
  * caller needs their own GitHub PAT, so anonymous tool/resource
  * enumeration via MCP would fail).
  *
- * v3: list_environments removed; pull_secret, push_secret,
+ * v3 (0.3.0): list_environments removed; pull_secret, push_secret,
  * sync_status added; the `environment` parameter is gone.
+ *
+ * v3.1 (0.4.0, additive UX): generate_global_env added (11th tool).
+ * pull/push conflict structuredContent now carries vault_modified_at_ist,
+ * local_modified_at_ist, and recommended_side hints.
  */
 
 export const SERVER_CARD = {
   serverInfo: {
     name: 'envpact',
-    version: '0.3.0',
+    version: '0.4.0',
   },
   authentication: {
     required: true,
@@ -91,7 +95,8 @@ export const SERVER_CARD = {
       name: 'pull_secret',
       description:
         'Resolve one key from the vault. Worker variant returns the value as the response text body ' +
-        '(caller writes it to disk). Conflict gating uses optional `expected_modified_at`.',
+        '(caller writes it to disk). Conflict gating uses optional `expected_modified_at`. v3.1: ' +
+        'conflict refusals carry both UTC and IST timestamps + a `recommended_side` hint.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -107,7 +112,8 @@ export const SERVER_CARD = {
       name: 'push_secret',
       description:
         'Push one key into the vault. Worker REQUIRES `value` (no .env to read from). Conflict gating ' +
-        'uses optional `expected_modified_at`.',
+        'uses optional `expected_modified_at`. v3.1: conflict refusals carry UTC + IST timestamps ' +
+        'and a `recommended_side` hint.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -124,7 +130,8 @@ export const SERVER_CARD = {
       name: 'sync_status',
       description:
         'Per-key sync status from the vault\'s perspective. Optionally fetches a project repo\'s ' +
-        '.env.example via Contents API to enumerate required keys.',
+        '.env.example via Contents API to enumerate required keys. v3.1: each key entry carries ' +
+        'vault_modified_at and lock_modified_at in BOTH UTC and IST.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -133,6 +140,23 @@ export const SERVER_CARD = {
           env_example_path: { type: 'string' },
         },
         required: ['project_name'],
+      },
+    },
+    {
+      name: 'generate_global_env',
+      description:
+        'Render the vault\'s shared.* entries as a global .env body and return it as text. The Worker ' +
+        'has no filesystem; the caller writes the returned text to ~/.envpact/.env (mode 0600). Optional ' +
+        '`example_text` parameter is treated as a byte-faithful template per SHARED_SPEC §5.1.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          example_text: {
+            type: 'string',
+            description:
+              'Byte-faithful .env.example.global template. If omitted, the Worker emits an alphabetical KEY= list of every shared.* key.',
+          },
+        },
       },
     },
   ],

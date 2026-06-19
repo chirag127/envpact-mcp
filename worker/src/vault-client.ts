@@ -109,7 +109,7 @@ export function upgradeVault(parsed: unknown): Vault {
 export class VaultClient {
   constructor(
     private readonly token: string,
-    private readonly userAgent = 'envpact-mcp-worker/0.3.0'
+    private readonly userAgent = 'envpact-mcp-worker/0.4.0'
   ) {
     if (!token) throw new Error('GitHub token required');
   }
