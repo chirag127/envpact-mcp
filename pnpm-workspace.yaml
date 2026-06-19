@@ -1,0 +1,8 @@
+# pnpm v11 settings — formerly under `pnpm` key in package.json.
+#
+# allowBuilds explicitly lists which transitive deps may run their
+# install/postinstall scripts. esbuild ships a per-platform native
+# binary downloaded by its install script, so we must allow it.
+
+allowBuilds:
+  esbuild: true

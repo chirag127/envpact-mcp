@@ -10,14 +10,37 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # for softprops/action-gh-release
-      id-token: write
+      id-token: write   # for npm provenance
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+          run_install: false
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
-      - run: npm ci --no-audit --no-fund
+
+      - name: Resolve pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-node22-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-node22-pnpm-
+            ${{ runner.os }}-pnpm-
+
+      - run: pnpm install --frozen-lockfile
+
       - name: Verify version matches tag
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
@@ -26,12 +49,19 @@ jobs:
             echo "::error::package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION)"
             exit 1
           fi
+
       - name: Test
-        run: node --test tests/*.test.js
-      - name: Publish
-        run: npm publish --provenance --access public
+        run: pnpm test
+
+      # `pnpm publish` uses the npm registry's publish endpoint with
+      # provenance + the NPM_TOKEN auth token from setup-node's
+      # registry-url config. --no-git-checks because tag pushes
+      # arrive on detached HEAD.
+      - name: Publish to npm
+        run: pnpm publish --provenance --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

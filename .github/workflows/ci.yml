@@ -16,16 +16,40 @@ jobs:
         node: [18, 20, 22]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+          run_install: false
+
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - run: npm ci --no-audit --no-fund
+
+      - name: Resolve pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-node${{ matrix.node }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-node${{ matrix.node }}-pnpm-
+            ${{ runner.os }}-pnpm-
+
+      - run: pnpm install --frozen-lockfile
+
       - name: Lint
         shell: bash
         run: |
           for f in src/index.js src/lib/*.js src/tools/*.js tests/*.test.js; do
             node --check "$f"
           done
+
       - name: Test
         shell: bash
-        run: node --test tests/*.test.js
+        run: pnpm test

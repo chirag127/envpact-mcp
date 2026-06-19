@@ -1,0 +1,11 @@
+# pnpm v11 settings for the Cloudflare Worker variant.
+#
+# wrangler ships ESM/CJS builds with no native postinstall, but
+# its sub-deps may. We approve only what's needed:
+#   - workerd: Cloudflare's local-dev runtime (downloaded by wrangler)
+#   - esbuild: wrangler's bundler (transitive)
+
+allowBuilds:
+  workerd: true
+  esbuild: true
+  sharp: true
