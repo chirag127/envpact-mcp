@@ -45,14 +45,14 @@ build:
 # ──────────────────────────────────────────────────────────────────
 # Listing metadata (Smithery shows this on the marketplace card)
 # ──────────────────────────────────────────────────────────────────
-displayName: envpact
+displayName: envpact — centralized secrets for solo devs
 icon: https://raw.githubusercontent.com/chirag127/envpact/main/docs/icon.png
 description: >-
-  Centralized secrets manager for AI agents. Resolves secrets from a
-  private Git-backed vault (~/.envpact/secrets) into project-scoped
-  environment maps. Reuse `shared.OPENAI_API_KEY` across 100+ projects;
-  rotate once, every project gets the new value next run. $0/month,
-  no SaaS subscription.
+  Resolve secrets from a private Git-backed vault into project .env
+  files (v3.1 schema, 11 tools). Per-key timestamps, UTC + IST
+  dual-render conflict prompts, and a global ~/.envpact/.env mirror.
+  Reuse `shared.OPENAI_API_KEY` across 100+ projects; rotate once,
+  every project gets the new value next run. $0/month, no SaaS.
 tags:
   - secrets-manager
   - dotenv
